@@ -735,22 +735,34 @@ class APIEndpoints:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def filtered_packets(self):
+    def filtered_packets(self, start_timestamp=None, end_timestamp=None, limit=1000, type=None, route=None):
         # Handle OPTIONS request for CORS preflight
         if cherrypy.request.method == "OPTIONS":
             self._set_cors_headers()
             return ""
             
         try:
-            params = self._get_params({
-                'type': None,
-                'route': None, 
-                'start_timestamp': None,
-                'end_timestamp': None,
-                'limit': 1000
+            # Convert 'type' parameter to 'packet_type' for storage method
+            packet_type = int(type) if type is not None else None
+            route_int = int(route) if route is not None else None
+            start_ts = float(start_timestamp) if start_timestamp is not None else None
+            end_ts = float(end_timestamp) if end_timestamp is not None else None
+            limit_int = int(limit) if limit is not None else 1000
+            
+            packets = self._get_storage().get_filtered_packets(
+                packet_type=packet_type,
+                route=route_int,
+                start_timestamp=start_ts,
+                end_timestamp=end_ts,
+                limit=limit_int
+            )
+            return self._success(packets, count=len(packets), filters={
+                'type': packet_type,
+                'route': route_int,
+                'start_timestamp': start_ts,
+                'end_timestamp': end_ts,
+                'limit': limit_int
             })
-            packets = self._get_storage().get_filtered_packets(**params)
-            return self._success(packets, count=len(packets), filters=params)
         except ValueError as e:
             return self._error(f"Invalid parameter format: {e}")
         except Exception as e:
