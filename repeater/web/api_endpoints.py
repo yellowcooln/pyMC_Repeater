@@ -601,6 +601,66 @@ class APIEndpoints:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    def check_pymc_console(self):
+        """Check if PyMC Console directory exists."""
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            pymc_console_path = '/opt/pymc_console/web/html'
+            exists = os.path.isdir(pymc_console_path)
+            
+            return self._success({
+                "exists": exists,
+                "path": pymc_console_path
+            })
+        except Exception as e:
+            logger.error(f"Error checking PyMC Console directory: {e}")
+            return self._error(str(e))
+    
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in()
+    def update_web_config(self):
+        """Update web configuration (CORS, frontend path) using ConfigManager."""
+        self._set_cors_headers()
+        
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+        
+        try:
+            self._require_post()
+            updates = cherrypy.request.json or {}
+            
+            if not updates:
+                return self._error("No configuration updates provided")
+            
+            # Use ConfigManager to update and save configuration
+            # Web changes (CORS, web_path) don't require live update
+            result = self.config_manager.update_and_save(
+                updates=updates,
+                live_update=False
+            )
+            
+            if result.get("success"):
+                logger.info(f"Web configuration updated: {list(updates.keys())}")
+                return self._success({
+                    "persisted": result.get("saved", False),
+                    "message": "Web configuration saved successfully. Restart required for changes to take effect."
+                })
+            else:
+                return self._error(result.get("error", "Failed to update web configuration"))
+            
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating web config: {e}")
+            return self._error(str(e))
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
     @cherrypy.tools.json_in()
     def restart_service(self):
         """Restart the pymc-repeater service via systemctl."""

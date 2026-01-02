@@ -728,6 +728,7 @@ class RepeaterHandler(BaseHandler):
                     "direct_tx_delay_factor": delays_config.get("direct_tx_delay_factor", 0.5),
                     "rx_delay_base": delays_config.get("rx_delay_base", 0.0),
                 },
+                "web": self.config.get("web", {}),  # Include web configuration
             },
             "public_key": None,
         }
