@@ -279,8 +279,15 @@ EOF
     SCRIPT_DIR="$(dirname "$0")"
     cd "$SCRIPT_DIR"
     
-    # Set version for setuptools-scm (since .git folder won't be copied)
-    export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PYMC_REPEATER="1.0.5-dev0"
+    # Calculate version from git for setuptools_scm
+    if [ -d .git ]; then
+        git fetch --tags 2>/dev/null || true
+        GIT_VERSION=$(python3 -m setuptools_scm 2>/dev/null || echo "1.0.5")
+        export SETUPTOOLS_SCM_PRETEND_VERSION="$GIT_VERSION"
+        echo "Installing version: $GIT_VERSION"
+    else
+        export SETUPTOOLS_SCM_PRETEND_VERSION="1.0.5"
+    fi
     
     if pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
         echo ""
@@ -420,13 +427,7 @@ EOF
         SCRIPT_DIR="$(dirname "$0")"
         cd "$SCRIPT_DIR"
         
-        # Ensure we have the latest tags for version calculation
-        if [ -d .git ]; then
-            echo "Fetching latest tags for version info..."
-            git fetch --tags 2>/dev/null || true
-        fi
-        
-        if pip install --break-system-packages --force-reinstall --no-cache-dir --no-build-isolation --ignore-installed .; then
+        if pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
             echo ""
             echo "✓ Python package update completed successfully!"
         else

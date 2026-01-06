@@ -75,8 +75,6 @@ profile = "black"
 line_length = 100
 
 [tool.setuptools_scm]
-write_to = "repeater/_version.py"
 version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
-fallback_version = "1.0.5"
 
