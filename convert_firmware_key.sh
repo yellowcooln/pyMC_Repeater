@@ -85,8 +85,8 @@ try:
     
     print(f"Derived public key: {pubkey.hex()}")
     
-    # Calculate address (first byte of SHA256 of pubkey)
-    address = hashlib.sha256(pubkey).digest()[0]
+    # Calculate address (MeshCore uses first byte of pubkey directly, not SHA256)
+    address = pubkey[0]
     print(f"Node address: 0x{address:02x}")
     print()
     
