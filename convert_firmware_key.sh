@@ -142,6 +142,10 @@ if [ $? -ne 0 ]; then
     echo "Error: Python script failed"
     exit 1
 fi
+
+# Offer to restart service
+if systemctl is-active --quiet pymc-repeater 2>/dev/null; then
+    read -p "Restart pymc-repeater service now? (yes/no): " RESTART
     if [ "$RESTART" = "yes" ]; then
         systemctl restart pymc-repeater
         echo "✓ Service restarted"
