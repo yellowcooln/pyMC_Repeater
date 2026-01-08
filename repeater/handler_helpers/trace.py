@@ -6,6 +6,7 @@ which are used for network diagnostics to track the path and SNR
 of packets through the mesh network.
 """
 
+import asyncio
 import logging
 import time
 from typing import Dict, Any
@@ -33,6 +34,9 @@ class TraceHelper:
         self.local_hash = local_hash
         self.repeater_handler = repeater_handler
         self.packet_injector = packet_injector  # Function to inject packets into router
+        
+        # Ping callback system - track pending ping requests by tag
+        self.pending_pings = {}  # {tag: {'event': asyncio.Event(), 'result': dict, 'target': int, 'sent_at': float}}
         
         # Create TraceHandler internally as a parsing utility
         self.trace_handler = TraceHandler(log_fn=log_fn or logger.info)
@@ -63,6 +67,21 @@ class TraceHelper:
 
             trace_path = parsed_data["trace_path"]
             trace_path_len = len(trace_path)
+
+            # Check if this is a response to one of our pings
+            trace_tag = parsed_data.get("tag")
+            if trace_tag in self.pending_pings:
+                ping_info = self.pending_pings[trace_tag]
+                # Store response data
+                ping_info['result'] = {
+                    'path': trace_path,
+                    'snr': packet.get_snr(),
+                    'rssi': getattr(packet, "rssi", 0),
+                    'received_at': time.time()
+                }
+                # Signal the waiting coroutine
+                ping_info['event'].set()
+                logger.info(f"Ping response received for tag {trace_tag}")
 
             # Record the trace packet for dashboard/statistics
             if self.repeater_handler:
@@ -269,3 +288,40 @@ class TraceHelper:
             logger.info(f"Not our turn (next hop: 0x{expected_hash:02x})")
         elif self.repeater_handler and self.repeater_handler.is_duplicate(packet):
             logger.info("Duplicate packet, ignoring")
+
+    def register_ping(self, tag: int, target_hash: int) -> asyncio.Event:
+        """Register a ping request and return an event to wait on.
+        
+        Args:
+            tag: The unique trace tag for this ping
+            target_hash: The hash of the target node
+            
+        Returns:
+            asyncio.Event that will be set when response is received
+        """
+        event = asyncio.Event()
+        self.pending_pings[tag] = {
+            'event': event,
+            'result': None,
+            'target': target_hash,
+            'sent_at': time.time()
+        }
+        logger.debug(f"Registered ping with tag {tag} for target 0x{target_hash:02x}")
+        return event
+
+    def cleanup_stale_pings(self, max_age_seconds: int = 30):
+        """Remove pending pings older than max_age_seconds.
+        
+        Args:
+            max_age_seconds: Maximum age in seconds before a ping is considered stale
+        """
+        current_time = time.time()
+        stale_tags = [
+            tag for tag, info in self.pending_pings.items()
+            if current_time - info['sent_at'] > max_age_seconds
+        ]
+        for tag in stale_tags:
+            self.pending_pings.pop(tag)
+            logger.debug(f"Cleaned up stale ping with tag {tag}")
+        if stale_tags:
+            logger.info(f"Cleaned up {len(stale_tags)} stale ping(s)")

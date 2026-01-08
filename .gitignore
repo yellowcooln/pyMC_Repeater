@@ -8,6 +8,7 @@ __pycache__/
 .Python
 build/
 .pybuild/
+repeater/_version.py
 develop-eggs/
 dist/
 downloads/
@@ -24,7 +25,12 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-*/_version.py
+DEBIAN/
+debian/files
+debian/.debhelper/
+debian/pymc-repeater/
+debian/pymc-repeater.debhelper.log
+debian/pymc-repeater.substvars
 
 # Virtual environments
 .venv/
@@ -50,3 +56,4 @@ identity.json
 # Logs
 *.log
 .DS_Store
+syncpi.sh

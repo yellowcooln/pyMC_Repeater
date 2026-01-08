@@ -97,9 +97,18 @@ class RRDToolHandler:
                 type_values.append(str(type_counts.get(f"type_{i}", 0)))
             type_values.append(str(type_counts.get("type_other", 0)))
             
+            # Handle None values for TX packets - use 'U' (unknown) for RRD
+            rssi = record.get('rssi')
+            snr = record.get('snr')
+            score = record.get('score')
+            
+            rssi_val = 'U' if rssi is None else str(rssi)
+            snr_val = 'U' if snr is None else str(snr)
+            score_val = 'U' if score is None else str(score)
+            length_val = str(record.get('length', 0))
+            
             basic_values = f"{timestamp}:{rx_total}:{tx_total}:{drop_total}:" \
-                          f"{record.get('rssi', 'U')}:{record.get('snr', 'U')}:" \
-                          f"{record.get('length', 'U')}:{record.get('score', 'U')}:" \
+                          f"{rssi_val}:{snr_val}:{length_val}:{score_val}:" \
                           f"U"
             
             type_values_str = ":".join(type_values)

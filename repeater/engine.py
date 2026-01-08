@@ -12,6 +12,8 @@ from pymc_core.protocol.constants import (
     MAX_PATH_SIZE,
     PAYLOAD_TYPE_ADVERT,
     PH_ROUTE_MASK,
+    PH_TYPE_MASK,
+    PH_TYPE_SHIFT,
     ROUTE_TYPE_DIRECT,
     ROUTE_TYPE_FLOOD,
     ROUTE_TYPE_TRANSPORT_FLOOD,
@@ -168,8 +170,29 @@ class RepeaterHandler(BaseHandler):
             else:
                 self.forwarded_count += 1
                 transmitted = True
-                # Schedule retransmit with delay
-                await self.schedule_retransmit(fwd_pkt, delay, airtime_ms)
+                # Schedule retransmit with delay (returns task)
+                tx_task = await self.schedule_retransmit(fwd_pkt, delay, airtime_ms)
+                
+                # Wait for transmission to complete to get LBT metadata
+                await tx_task
+                
+                # Extract LBT metadata after transmission
+                tx_metadata = getattr(fwd_pkt, '_tx_metadata', None)
+                lbt_attempts = 0
+                lbt_backoff_delays_ms = None
+                lbt_channel_busy = False
+                
+                if tx_metadata:
+                    lbt_attempts = tx_metadata.get('lbt_attempts', 0)
+                    lbt_backoff_delays_ms = tx_metadata.get('lbt_backoff_delays_ms', [])
+                    lbt_channel_busy = tx_metadata.get('lbt_channel_busy', False)
+                    
+                    if lbt_attempts > 0:
+                        total_lbt_delay = sum(lbt_backoff_delays_ms)
+                        logger.info(
+                            f"LBT: {lbt_attempts} attempts, {total_lbt_delay:.0f}ms delay, "
+                            f"backoffs={lbt_backoff_delays_ms}"
+                        )
         else:
             self.dropped_count += 1
             # Determine drop reason from process_packet result
@@ -261,6 +284,9 @@ class RepeaterHandler(BaseHandler):
                 [f"{b:02X}" for b in forwarded_path] if forwarded_path is not None else None
             ),
             "raw_packet": packet.write_to().hex() if hasattr(packet, "write_to") else None,
+            "lbt_attempts": lbt_attempts if transmitted else 0,
+            "lbt_backoff_delays_ms": lbt_backoff_delays_ms if transmitted and lbt_backoff_delays_ms else None,
+            "lbt_channel_busy": lbt_channel_busy if transmitted else False,
         }
 
         # Store packet record to persistent storage
@@ -618,11 +644,12 @@ class RepeaterHandler(BaseHandler):
             return None
 
     async def schedule_retransmit(self, fwd_pkt: Packet, delay: float, airtime_ms: float = 0.0):
-
+        """Schedule a packet retransmission with delay and return the task."""
         async def delayed_send():
             await asyncio.sleep(delay)
             try:
                 await self.dispatcher.send_packet(fwd_pkt, wait_for_ack=False)
+                
                 # Record airtime after successful TX
                 if airtime_ms > 0:
                     self.airtime_mgr.record_tx(airtime_ms)
@@ -633,7 +660,7 @@ class RepeaterHandler(BaseHandler):
             except Exception as e:
                 logger.error(f"Retransmit failed: {e}")
 
-        asyncio.create_task(delayed_send())
+        return asyncio.create_task(delayed_send())
 
     def get_noise_floor(self) -> Optional[float]:
         try:
@@ -687,20 +714,15 @@ class RepeaterHandler(BaseHandler):
                 "node_name": repeater_config.get("node_name", "Unknown"),
                 "repeater": {
                     "mode": repeater_config.get("mode", "forward"),
-                    "use_score_for_tx": self.use_score_for_tx,
-                    "score_threshold": self.score_threshold,
-                    "send_advert_interval_hours": self.send_advert_interval_hours,
+                    "use_score_for_tx": repeater_config.get("use_score_for_tx", False),
+                    "score_threshold": repeater_config.get("score_threshold", 0.3),
+                    "send_advert_interval_hours": repeater_config.get("send_advert_interval_hours", 10),
                     "latitude": repeater_config.get("latitude", 0.0),
                     "longitude": repeater_config.get("longitude", 0.0),
+                    "max_flood_hops": repeater_config.get("max_flood_hops", 3),
+                    "advert_interval_minutes": repeater_config.get("advert_interval_minutes", 120),
                 },
-                "radio": {
-                    "frequency": self.radio_config.get("frequency", 0),
-                    "tx_power": self.radio_config.get("tx_power", 0),
-                    "bandwidth": self.radio_config.get("bandwidth", 0),
-                    "spreading_factor": self.radio_config.get("spreading_factor", 0),
-                    "coding_rate": self.radio_config.get("coding_rate", 0),
-                    "preamble_length": self.radio_config.get("preamble_length", 0),
-                },
+                "radio": self.config.get("radio", {}),  # Read from live config, not cached radio_config
                 "duty_cycle": {
                     "max_airtime_percent": max_duty_cycle_percent,
                     "enforcement_enabled": duty_cycle_config.get("enforcement_enabled", True),
@@ -708,7 +730,9 @@ class RepeaterHandler(BaseHandler):
                 "delays": {
                     "tx_delay_factor": delays_config.get("tx_delay_factor", 1.0),
                     "direct_tx_delay_factor": delays_config.get("direct_tx_delay_factor", 0.5),
+                    "rx_delay_base": delays_config.get("rx_delay_base", 0.0),
                 },
+                "web": self.config.get("web", {}),  # Include web configuration
             },
             "public_key": None,
         }
@@ -779,6 +803,27 @@ class RepeaterHandler(BaseHandler):
                 logger.debug("No send_advert_func configured")
         except Exception as e:
             logger.error(f"Error sending periodic advert: {e}")
+
+    def reload_runtime_config(self):
+        """Reload runtime configuration from self.config (called after live config updates)."""
+        try:
+            # Refresh delay factors
+            self.tx_delay_factor = self.config.get("delays", {}).get("tx_delay_factor", 1.0)
+            self.direct_tx_delay_factor = self.config.get("delays", {}).get("direct_tx_delay_factor", 0.5)
+            
+            # Refresh repeater settings
+            repeater_config = self.config.get("repeater", {})
+            self.use_score_for_tx = repeater_config.get("use_score_for_tx", False)
+            self.score_threshold = repeater_config.get("score_threshold", 0.3)
+            self.send_advert_interval_hours = repeater_config.get("send_advert_interval_hours", 10)
+            self.cache_ttl = repeater_config.get("cache_ttl", 60)
+            
+            # Note: Radio config changes require restart as they affect hardware
+            # Note: Airtime manager has its own config reference that gets updated
+            
+            logger.info("Runtime configuration reloaded successfully")
+        except Exception as e:
+            logger.error(f"Error reloading runtime config: {e}")
 
     def cleanup(self):
         if self._background_task and not self._background_task.done():

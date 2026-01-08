@@ -4,10 +4,12 @@ import os
 import sys
 
 from repeater.config import get_radio_for_board, load_config
+from repeater.config_manager import ConfigManager
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
-from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper
+from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper, PathHelper, ProtocolRequestHelper
 from repeater.packet_router import PacketRouter
+from repeater.identity_manager import IdentityManager
 
 logger = logging.getLogger("RepeaterDaemon")
 
@@ -22,10 +24,17 @@ class RepeaterDaemon:
         self.repeater_handler = None
         self.local_hash = None
         self.local_identity = None
+        self.identity_manager = None
+        self.config_manager = None
         self.http_server = None
         self.trace_helper = None
         self.advert_helper = None
         self.discovery_helper = None
+        self.login_helper = None
+        self.text_helper = None
+        self.path_helper = None
+        self.protocol_request_helper = None
+        self.acl = None
         self.router = None
 
 
@@ -84,6 +93,11 @@ class RepeaterDaemon:
             self.dispatcher = Dispatcher(self.radio)
             logger.info("Dispatcher initialized")
 
+            # Initialize Identity Manager for additional identities (e.g., room servers)
+            self.identity_manager = IdentityManager(self.config)
+            logger.info("Identity manager initialized")
+
+            # Set up default repeater identity (not managed by identity manager)
             identity_key = self.config.get("mesh", {}).get("identity_key")
             if not identity_key:
                 logger.error("No identity key found in configuration. Cannot init repeater.")
@@ -95,10 +109,13 @@ class RepeaterDaemon:
 
             pubkey = local_identity.get_public_key()
             self.local_hash = pubkey[0]
+            
             logger.info(f"Local identity set: {local_identity.get_address_bytes().hex()}")
-            local_hash_hex = f"0x{self.local_hash: 02x}"
+            local_hash_hex = f"0x{self.local_hash:02x}"
             logger.info(f"Local node hash (from identity): {local_hash_hex}")
 
+            # Load additional identities from config (e.g., room servers)
+            await self._load_additional_identities()
 
             self.dispatcher._is_own_packet = lambda pkt: False
 
@@ -145,9 +162,206 @@ class RepeaterDaemon:
             else:
                 logger.info("Discovery response handler disabled")
 
+            # Create login helper (will create per-identity ACLs)
+            self.login_helper = LoginHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                log_fn=logger.info,
+            )
+            
+            # Register default repeater identity
+            self.login_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater",
+                config=self.config  # Pass full config so repeater can access top-level security section
+            )
+            
+            # Register room server identities with their configs
+            for name, identity, config in self.identity_manager.get_identities_by_type("room_server"):
+                self.login_helper.register_identity(
+                    name=name, 
+                    identity=identity, 
+                    identity_type="room_server",
+                    config=config  # Pass room-specific config
+                )
+            
+            logger.info("Login processing helper initialized")
+            
+            # Initialize ConfigManager for centralized config management
+            self.config_manager = ConfigManager(
+                config_path=getattr(self, 'config_path', '/etc/pymc_repeater/config.yaml'),
+                config=self.config,
+                daemon_instance=self
+            )
+            logger.info("Config manager initialized")
+            
+            # Initialize text message helper with per-identity ACLs
+            self.text_helper = TextHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                acl_dict=self.login_helper.get_acl_dict(),  # Per-identity ACLs
+                log_fn=logger.info,
+                config_path=getattr(self, 'config_path', None),  # For CLI to save changes
+                config=self.config,  # For CLI to read/modify settings
+                config_manager=self.config_manager,  # New centralized config manager
+                sqlite_handler=self.repeater_handler.storage.sqlite_handler if self.repeater_handler and self.repeater_handler.storage else None,  # For room server database
+                send_advert_callback=self.send_advert,  # For CLI advert command
+            )
+            
+            # Register default repeater identity for text messages
+            self.text_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater",
+                radio_config=self.config.get("radio", {})
+            )
+            
+            # Register room server identities for text messages
+            for name, identity, config in self.identity_manager.get_identities_by_type("room_server"):
+                self.text_helper.register_identity(
+                    name=name,
+                    identity=identity,
+                    identity_type="room_server",
+                    radio_config=config  # Pass room-specific config (includes max_posts, etc.)
+                )
+            
+            logger.info("Text message processing helper initialized")
+            
+            # Initialize PATH packet helper for updating client out_path
+            self.path_helper = PathHelper(
+                acl_dict=self.login_helper.get_acl_dict(),  # Per-identity ACLs
+                log_fn=logger.info,
+            )
+            logger.info("PATH packet processing helper initialized")
+            
+            # Initialize protocol request handler for status/telemetry requests
+            self.protocol_request_helper = ProtocolRequestHelper(
+                identity_manager=self.identity_manager,
+                packet_injector=self.router.inject_packet,
+                acl_dict=self.login_helper.get_acl_dict(),
+                radio=self.radio,
+                engine=self.repeater_handler,
+                neighbor_tracker=self.advert_helper,
+            )
+            # Register repeater identity for protocol requests
+            self.protocol_request_helper.register_identity(
+                name="repeater",
+                identity=self.local_identity,
+                identity_type="repeater"
+            )
+            logger.info("Protocol request handler initialized")
+
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
             raise
+
+    async def _load_additional_identities(self):
+        from pymc_core import LocalIdentity
+        
+        identities_config = self.config.get("identities", {})
+        
+        # Load room server identities
+        room_servers = identities_config.get("room_servers") or []
+        for room_config in room_servers:
+            try:
+                name = room_config.get("name")
+                identity_key = room_config.get("identity_key")
+                
+                if not name or not identity_key:
+                    logger.warning(
+                        f"Skipping room server config: missing name or identity_key"
+                    )
+                    continue
+                
+                # Convert identity_key to bytes if it's a hex string
+                if isinstance(identity_key, bytes):
+                    identity_key_bytes = identity_key
+                elif isinstance(identity_key, str):
+                    try:
+                        identity_key_bytes = bytes.fromhex(identity_key)
+                        if len(identity_key_bytes) != 32:
+                            logger.error(f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32)")
+                            continue
+                    except ValueError as e:
+                        logger.error(f"Identity key for '{name}' is not valid hex: {e}")
+                        continue
+                else:
+                    logger.error(f"Identity key for '{name}' has unknown type: {type(identity_key)}")
+                    continue
+                
+                # Create the identity
+                room_identity = LocalIdentity(seed=identity_key_bytes)
+                
+                # Register with the manager and all helpers
+                success = self._register_identity_everywhere(
+                    name=name,
+                    identity=room_identity,
+                    config=room_config,
+                    identity_type="room_server"
+                )
+                
+                if success:
+                    room_hash = room_identity.get_public_key()[0]
+                    logger.info(
+                        f"Loaded room server '{name}': hash=0x{room_hash:02x}, "
+                        f"address={room_identity.get_address_bytes().hex()}"
+                    )
+                
+            except Exception as e:
+                logger.error(f"Failed to load room server identity '{name}': {e}")
+        
+        # Summary logging
+        total_identities = len(self.identity_manager.list_identities())
+        logger.info(f"Identity manager loaded {total_identities} total identities")
+
+    def _register_identity_everywhere(
+        self,
+        name: str,
+        identity,
+        config: dict,
+        identity_type: str
+    ) -> bool:
+        """
+        Register an identity with the manager and all helpers in one place.
+        This is the single source of truth for identity registration.
+        """
+        # Register with identity manager
+        success = self.identity_manager.register_identity(
+            name=name,
+            identity=identity,
+            config=config,
+            identity_type=identity_type
+        )
+        
+        if not success:
+            return False
+        
+        # Register with all helpers
+        if self.login_helper:
+            self.login_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                config=config
+            )
+        
+        if self.text_helper:
+            self.text_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                radio_config=self.config.get("radio", {})
+            )
+        
+        if self.protocol_request_helper:
+            self.protocol_request_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type
+            )
+        
+        return True
 
     async def _router_callback(self, packet):
         """
@@ -159,6 +373,32 @@ class RepeaterDaemon:
                 await self.router.enqueue(packet)
             except Exception as e:
                 logger.error(f"Error enqueuing packet in router: {e}", exc_info=True)
+    
+    def register_text_handler_for_identity(
+        self, 
+        name: str, 
+        identity, 
+        identity_type: str = "room_server",
+        radio_config: dict = None
+    ):
+
+        if not self.text_helper:
+            logger.warning("Text helper not initialized, cannot register identity")
+            return False
+            
+        try:
+            self.text_helper.register_identity(
+                name=name,
+                identity=identity,
+                identity_type=identity_type,
+                radio_config=radio_config or self.config.get("radio", {}),
+            )
+            logger.info(f"Registered text handler for {identity_type} '{name}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to register text handler for '{name}': {e}")
+            return False
+    
     def get_stats(self) -> dict:
         stats = {}
         

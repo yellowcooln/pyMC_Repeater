@@ -33,13 +33,9 @@ class StorageCollector:
         self.letsmesh_handler = None
         if config.get("letsmesh", {}).get("enabled", False) and local_identity:
             try:
-                # Get keys from local_identity (signing_key.encode() is the private key seed)
-                private_key_hex = local_identity.signing_key.encode().hex()
-                public_key_hex = local_identity.get_public_key().hex()
-
+                # Pass local_identity directly (supports both standard and firmware keys)
                 self.letsmesh_handler = MeshCoreToMqttJwtPusher(
-                    private_key=private_key_hex,
-                    public_key=public_key_hex,
+                    local_identity=local_identity,
                     config=config,
                     stats_provider=self._get_live_stats,
                 )
@@ -51,6 +47,7 @@ class StorageCollector:
                 node_info = get_node_info(config)
                 self.disallowed_packet_types = set(node_info["disallowed_packet_types"])
 
+                public_key_hex = local_identity.get_public_key().hex()
                 logger.info(
                     f"LetsMesh handler initialized with public key: {public_key_hex[:16]}..."
                 )
@@ -186,6 +183,28 @@ class StorageCollector:
 
     def get_neighbors(self) -> dict:
         return self.sqlite_handler.get_neighbors()
+    
+    def get_node_name_by_pubkey(self, pubkey: str) -> Optional[str]:
+        """
+        Lookup node name from adverts table by public key.
+        
+        Args:
+            pubkey: Public key in hex string format
+            
+        Returns:
+            Node name if found, None otherwise
+        """
+        try:
+            import sqlite3
+            with sqlite3.connect(self.sqlite_handler.sqlite_path) as conn:
+                result = conn.execute(
+                    "SELECT node_name FROM adverts WHERE pubkey = ? AND node_name IS NOT NULL ORDER BY last_seen DESC LIMIT 1",
+                    (pubkey,)
+                ).fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.debug(f"Could not lookup node name for {pubkey[:8] if pubkey else 'None'}: {e}")
+            return None
 
     def cleanup_old_data(self, days: int = 7):
         self.sqlite_handler.cleanup_old_data(days)
