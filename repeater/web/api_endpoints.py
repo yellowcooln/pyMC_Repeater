@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 import cherrypy
 from repeater import __version__
@@ -260,11 +261,12 @@ class APIEndpoints:
         try:
             import json
 
-            # Check installed location first, then development location
-            installed_path = '/usr/share/pymc_repeater/radio-settings.json'
+            # Check config-based location first, then development location
+            config_dir = Path(self.config.get("storage_dir", "/var/lib/pymc_repeater"))
+            installed_path = config_dir / 'radio-settings.json'
             dev_path = os.path.join(os.path.dirname(__file__), '..', '..', 'radio-settings.json')
             
-            hardware_file = installed_path if os.path.exists(installed_path) else dev_path
+            hardware_file = str(installed_path) if installed_path.exists() else dev_path
             
             if not os.path.exists(hardware_file):
                 logger.error(f"Hardware file not found. Tried: {installed_path}, {dev_path}")
@@ -298,11 +300,12 @@ class APIEndpoints:
         try:
             import json
             
-            # Check installed location first, then development location
-            installed_path = '/usr/share/pymc_repeater/radio-presets.json'
+            # Check config-based location first, then development location
+            config_dir = Path(self.config.get("storage_dir", "/var/lib/pymc_repeater"))
+            installed_path = config_dir / 'radio-presets.json'
             dev_path = os.path.join(os.path.dirname(__file__), '..', '..', 'radio-presets.json')
             
-            presets_file = installed_path if os.path.exists(installed_path) else dev_path
+            presets_file = str(installed_path) if installed_path.exists() else dev_path
             
             if not os.path.exists(presets_file):
                 logger.error(f"Presets file not found. Tried: {installed_path}, {dev_path}")

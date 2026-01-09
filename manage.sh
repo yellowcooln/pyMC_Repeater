@@ -242,8 +242,8 @@ install_repeater() {
     cp "$SCRIPT_DIR/README.md" "$INSTALL_DIR/"
     cp "$SCRIPT_DIR/manage.sh" "$INSTALL_DIR/" 2>/dev/null || true
     cp "$SCRIPT_DIR/pymc-repeater.service" "$INSTALL_DIR/" 2>/dev/null || true
-    cp "$SCRIPT_DIR/radio-settings.json" "$INSTALL_DIR/" 2>/dev/null || true
-    cp "$SCRIPT_DIR/radio-presets.json" "$INSTALL_DIR/" 2>/dev/null || true
+    cp "$SCRIPT_DIR/radio-settings.json" /var/lib/pymc_repeater/ 2>/dev/null || true
+    cp "$SCRIPT_DIR/radio-presets.json" /var/lib/pymc_repeater/ 2>/dev/null || true
     
     echo "45"; echo "# Installing configuration..."
     cp "$SCRIPT_DIR/config.yaml.example" "$CONFIG_DIR/config.yaml.example"
@@ -413,8 +413,8 @@ upgrade_repeater() {
         cp pyproject.toml "$INSTALL_DIR/" 2>/dev/null || true
         cp README.md "$INSTALL_DIR/" 2>/dev/null || true
         cp pymc-repeater.service /etc/systemd/system/ 2>/dev/null || true
-        cp radio-settings.json "$INSTALL_DIR/" 2>/dev/null || true
-        cp radio-presets.json "$INSTALL_DIR/" 2>/dev/null || true
+        cp radio-settings.json /var/lib/pymc_repeater/ 2>/dev/null || true
+        cp radio-presets.json /var/lib/pymc_repeater/ 2>/dev/null || true
         echo "    ✓ Files updated"
         
         echo "[5/9] Validating and updating configuration..."
