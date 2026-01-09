@@ -204,7 +204,7 @@ class MeshCoreToMqttJwtPusher:
     ):
         # Store local identity and get public key
         self.local_identity = local_identity
-        public_key = local_identity.get_public_key().hex()
+        public_key = local_identity.get_public_key().hex().upper()
         
         # Extract values from config
         from ..config import get_node_info
