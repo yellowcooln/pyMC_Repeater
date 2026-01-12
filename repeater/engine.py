@@ -541,9 +541,16 @@ class RepeaterHandler(BaseHandler):
             packet.drop_reason = "Direct: not for us"
             return None
 
+        # Suppress duplicates
+        if self.is_duplicate(packet):
+            packet.drop_reason = "Duplicate"
+            return None
+
         original_path = list(packet.path)
         packet.path = bytearray(packet.path[1:])
         packet.path_len = len(packet.path)
+
+        self.mark_seen(packet)
 
         return packet
 
