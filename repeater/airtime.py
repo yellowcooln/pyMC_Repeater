@@ -9,9 +9,16 @@ logger = logging.getLogger("AirtimeManager")
 class AirtimeManager:
     def __init__(self, config: dict):
         self.config = config
+        self.radio_config = config.get("radio", {})
         self.max_airtime_per_minute = config.get("duty_cycle", {}).get(
             "max_airtime_per_minute", 3600
         )
+
+        # Store radio settings for airtime calculations
+        self.spreading_factor = self.radio_config.get("spreading_factor", 7)
+        self.bandwidth = self.radio_config.get("bandwidth", 125000)
+        self.coding_rate = self.radio_config.get("coding_rate", 5)
+        self.preamble_length = self.radio_config.get("preamble_length", 8)
 
         # Track airtime in rolling window
         self.tx_history = []  # [(timestamp, airtime_ms), ...]
@@ -21,10 +28,10 @@ class AirtimeManager:
     def calculate_airtime(
         self,
         payload_len: int,
-        spreading_factor: int = 7,
-        bandwidth_hz: int = 125000,
-        coding_rate: int = 5,
-        preamble_len: int = 8,
+        spreading_factor: int = None,
+        bandwidth_hz: int = None,
+        coding_rate: int = None,
+        preamble_len: int = None,
         crc_enabled: bool = True,
         explicit_header: bool = True,
     ) -> float:
@@ -35,19 +42,20 @@ class AirtimeManager:
         
         Args:
             payload_len: Payload length in bytes
-            spreading_factor: SF7-SF12 (default: 7)
-            bandwidth_hz: Bandwidth in Hz (default: 125000)
-            coding_rate: CR denominator, 5=4/5, 6=4/6, 7=4/7, 8=4/8 (default: 5)
-            preamble_len: Preamble symbols (default: 8)
+            spreading_factor: SF7-SF12 (uses config value if None)
+            bandwidth_hz: Bandwidth in Hz (uses config value if None)
+            coding_rate: CR denominator, 5=4/5, 6=4/6, 7=4/7, 8=4/8 (uses config value if None)
+            preamble_len: Preamble symbols (uses config value if None)
             crc_enabled: Whether CRC is enabled (default: True)
             explicit_header: Whether explicit header mode is used (default: True)
         
         Returns:
             Airtime in milliseconds
         """
-        sf = spreading_factor
-        bw_khz = bandwidth_hz / 1000
-        cr = coding_rate
+        sf = spreading_factor or self.spreading_factor
+        bw_khz = (bandwidth_hz or self.bandwidth) / 1000
+        cr = coding_rate or self.coding_rate
+        preamble_len = preamble_len or self.preamble_length
         crc = 1 if crc_enabled else 0
         h = 0 if explicit_header else 1  # H=0 for explicit, H=1 for implicit
         

@@ -153,10 +153,7 @@ class RepeaterHandler(BaseHandler):
             forwarded_path = list(fwd_pkt.path) if fwd_pkt.path else []
 
             # Check duty-cycle before scheduling TX
-            packet_bytes = (
-                fwd_pkt.write_to() if hasattr(fwd_pkt, "write_to") else fwd_pkt.payload or b""
-            )
-            airtime_ms = PacketTimingUtils.estimate_airtime_ms(len(packet_bytes), self.radio_config)
+            airtime_ms = self.airtime_mgr.calculate_airtime(fwd_pkt.get_raw_length())
 
             can_tx, wait_time = self.airtime_mgr.can_transmit(airtime_ms)
 
@@ -584,8 +581,8 @@ class RepeaterHandler(BaseHandler):
 
         import random
 
-        packet_len = len(packet.payload) if packet.payload else 0
-        airtime_ms = PacketTimingUtils.estimate_airtime_ms(packet_len, self.radio_config)
+        packet_len = packet.get_raw_length()
+        airtime_ms = self.airtime_mgr.calculate_airtime(packet_len)
 
         route_type = packet.header & PH_ROUTE_MASK
 
@@ -660,7 +657,7 @@ class RepeaterHandler(BaseHandler):
                 # Record airtime after successful TX
                 if airtime_ms > 0:
                     self.airtime_mgr.record_tx(airtime_ms)
-                packet_size = len(fwd_pkt.payload)
+                packet_size = fwd_pkt.get_raw_length()
                 logger.info(
                     f"Retransmitted packet ({packet_size} bytes, {airtime_ms:.1f}ms airtime)"
                 )
