@@ -153,8 +153,14 @@ class StatsApp:
         if args and args[0] == 'api':
             raise cherrypy.NotFound()
         
+        # Handle WebSocket routes
+        if args and len(args) >= 2 and args[0] == 'ws' and args[1] == 'packets':
+            # WebSocket tool will intercept this
+            return ""
+        
         # For all other routes, serve the Vue.js app (client-side routing)
         return self.index()
+    
 
 
 class HTTPStatsServer:
@@ -317,6 +323,22 @@ class HTTPStatsServer:
                 },
             }
             
+            # Add WebSocket configuration to main config if available
+            if WEBSOCKET_AVAILABLE:
+                try:
+                    init_websocket()
+                    config["/ws/packets"] = {
+                        "tools.websocket.on": True,
+                        "tools.websocket.handler_cls": PacketWebSocket,
+                        "tools.trailing_slash.on": False,
+                        "tools.require_auth.on": False,
+                    }
+                    logger.info("WebSocket endpoint configured at /ws/packets")
+                except Exception as e:
+                    logger.error(f"Failed to initialize WebSocket: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
             # Add CORS configuration if enabled
             if self._cors_enabled:
                 cors_config = {
@@ -434,27 +456,6 @@ class HTTPStatsServer:
                 ])
             
             cherrypy.tree.mount(self.doc_app, "/doc", doc_config)
-            
-            # Initialize WebSocket if available
-            if WEBSOCKET_AVAILABLE:
-                try:
-                    init_websocket()
-                    
-                    # Create WebSocket app
-                    class WSApp:
-                        @cherrypy.expose
-                        def index(self):
-                            pass  # WebSocket tool handles the actual upgrade
-                    
-                    cherrypy.tree.mount(WSApp(), '/ws/packets', {
-                        '/': {
-                            'tools.websocket.on': True,
-                            'tools.websocket.handler_cls': PacketWebSocket,
-                        }
-                    })
-                    logger.info("WebSocket endpoint mounted at /ws/packets")
-                except Exception as e:
-                    logger.error(f"Failed to initialize WebSocket: {e}")
             
             # Store auth handlers in cherrypy config for middleware access
             cherrypy.config.update({
