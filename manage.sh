@@ -167,7 +167,7 @@ install_repeater() {
     fi
     
     # Welcome screen
-    $DIALOG --backtitle "pyMC Repeater Management" --title "Welcome" --msgbox "\nWelcome to pyMC Repeater Setup\n\nThis installer will configure your Raspberry Pi as a LoRa mesh network repeater.\n\nPress OK to continue..." 12 70
+    $DIALOG --backtitle "pyMC Repeater Management" --title "Welcome" --msgbox "\nWelcome to pyMC Repeater Setup\n\nThis installer will configure your Linux system as a LoRa mesh network repeater.\n\nPress OK to continue..." 12 70
     
     # SPI Check
     CONFIG_FILE=""
@@ -235,6 +235,10 @@ install_repeater() {
         python3 -c "from setuptools_scm import get_version; get_version(write_to='repeater/_version.py')" 2>&1 || echo "    Warning: Could not generate _version.py file"
         echo "    Generated version: $GENERATED_VERSION"
     fi
+    
+    # Clean up stale bytecode in source directory before copying
+    find "$SCRIPT_DIR/repeater" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    find "$SCRIPT_DIR/repeater" -type f -name '*.pyc' -delete 2>/dev/null || true
     
     echo "29"; echo "# Cleaning old installation files..."
     # Remove old repeater directory to ensure clean install
@@ -314,7 +318,12 @@ EOF
         export SETUPTOOLS_SCM_PRETEND_VERSION="1.0.5"
     fi
     
-    if pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
+    # Force binary wheels for slow-to-compile packages (much faster on Raspberry Pi)
+    export PIP_ONLY_BINARY=pycryptodome,cffi,PyNaCl,psutil
+    echo "Note: Using optimized binary wheels for faster installation"
+    echo ""
+    
+    if pip install --break-system-packages --force-reinstall --no-cache-dir .; then
         echo ""
         echo "✓ Python package installation completed successfully!"
         
@@ -416,7 +425,10 @@ upgrade_repeater() {
             python3 -c "from setuptools_scm import get_version; get_version(write_to='repeater/_version.py')" 2>&1 || echo "    Warning: Could not generate _version.py file"
             echo "    Generated version: $GENERATED_VERSION"
         fi
-        echo "    ✓ Version file generated"
+        # Clean up stale bytecode in source directory before copying
+        find "$SCRIPT_DIR/repeater" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+        find "$SCRIPT_DIR/repeater" -type f -name '*.pyc' -delete 2>/dev/null || true
+        echo "    ✓ Version file generated and bytecode cleaned"
         
         echo "[3.8/9] Cleaning old installation files..."
         # Remove old repeater directory to ensure clean upgrade
@@ -490,8 +502,13 @@ EOF
             export SETUPTOOLS_SCM_PRETEND_VERSION="1.0.5"
         fi
         
-        # Force reinstall the package and all dependencies for clean upgrade
-        if python3 -m pip install --break-system-packages --force-reinstall --no-cache-dir --ignore-installed .; then
+        # Force binary wheels for slow-to-compile packages (much faster on Raspberry Pi)
+        export PIP_ONLY_BINARY=pycryptodome,cffi,PyNaCl,psutil
+        echo "Note: Using optimized binary wheels and cached packages for faster installation"
+        echo ""
+        
+        # Upgrade packages (uses cache for unchanged dependencies - much faster)
+        if python3 -m pip install --break-system-packages --upgrade --upgrade-strategy eager .; then
             echo ""
             echo "✓ Package and dependencies updated successfully!"
         else
@@ -764,6 +781,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "  start     - Start the service"
     echo "  stop      - Stop the service"
     echo "  restart   - Restart the service"
+    echo "  logs      - View live logs"
     echo "  status    - Show status"
     echo "  debug     - Show debug information"
     echo ""
@@ -808,6 +826,12 @@ case "$1" in
     "start"|"stop"|"restart")
         manage_service "$1"
         exit 0
+        ;;
+    "logs")
+        clear
+        echo "=== Live Logs (Press Ctrl+C to return) ==="
+        echo ""
+        journalctl -u "$SERVICE_NAME" -f
         ;;
     "status")
         show_detailed_status
