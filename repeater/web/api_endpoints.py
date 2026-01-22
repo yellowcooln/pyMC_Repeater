@@ -401,21 +401,44 @@ class APIEndpoints:
             config_yaml['radio']['coding_rate'] = int(radio_preset.get('coding_rate', 5))
             
             # Update hardware-specific settings (SPI pins, etc.)
-            if 'spi' in hw_config:
+            # Handle SPI configuration
+            if 'bus_id' in hw_config or 'cs_id' in hw_config:
                 config_yaml['radio']['spi'] = {
-                    'bus': hw_config['spi'].get('bus', 0),
-                    'cs': hw_config['spi'].get('cs', 0)
+                    'bus': hw_config.get('bus_id', 0),
+                    'cs': hw_config.get('cs_id', 0)
                 }
             
-            if 'pins' in hw_config:
-                pins = hw_config['pins']
+            # Handle pin configuration
+            if any(key in hw_config for key in ['reset_pin', 'busy_pin', 'irq_pin', 'txen_pin', 'rxen_pin', 'cs_pin', 'txled_pin', 'rxled_pin']):
                 config_yaml['radio']['pins'] = {
-                    'reset': pins.get('reset', 22),
-                    'busy': pins.get('busy', 17),
-                    'dio1': pins.get('dio1', 16),
-                    'txen': pins.get('txen', -1),
-                    'rxen': pins.get('rxen', -1)
+                    'reset': hw_config.get('reset_pin', 22),
+                    'busy': hw_config.get('busy_pin', 17),
+                    'dio1': hw_config.get('irq_pin', 16),
+                    'txen': hw_config.get('txen_pin', -1),
+                    'rxen': hw_config.get('rxen_pin', -1),
+                    'cs': hw_config.get('cs_pin', -1),
+                    'txled': hw_config.get('txled_pin', -1),
+                    'rxled': hw_config.get('rxled_pin', -1)
                 }
+            
+            # Handle TCXO and RF switch settings
+            if 'use_dio3_tcxo' in hw_config:
+                config_yaml['radio']['use_dio3_tcxo'] = hw_config.get('use_dio3_tcxo', False)
+            
+            if 'use_dio2_rf' in hw_config:
+                config_yaml['radio']['use_dio2_rf'] = hw_config.get('use_dio2_rf', False)
+            
+            # Handle preamble length
+            if 'preamble_length' in hw_config:
+                config_yaml['radio']['preamble_length'] = hw_config.get('preamble_length', 17)
+            
+            # Handle Waveshare-specific flag
+            if 'is_waveshare' in hw_config:
+                config_yaml['radio']['is_waveshare'] = hw_config.get('is_waveshare', False)
+            
+            # Handle hardware-specific TX power (can be overridden by user later)
+            if 'tx_power' in hw_config:
+                config_yaml['radio']['tx_power'] = hw_config.get('tx_power', 22)
             
             # Write updated config
             with open(self._config_path, 'w') as f:
