@@ -621,6 +621,7 @@ class MeshcoreTCPBridge:
         try:
             packet = PacketBuilder.create_login_packet(contact, identity, password)
             await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
             logger.info("RF login sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF login failed: %s", exc, exc_info=True)
@@ -634,6 +635,7 @@ class MeshcoreTCPBridge:
         try:
             packet, crc = PacketBuilder.create_logout_packet(contact, identity)
             await dispatcher.send_packet(packet, wait_for_ack=False, expected_crc=crc)
+            self._record_tx_packet(packet)
             logger.info("RF logout sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF logout failed: %s", exc, exc_info=True)
@@ -649,6 +651,7 @@ class MeshcoreTCPBridge:
                 contact=contact, local_identity=identity, protocol_code=REQ_TYPE_GET_STATUS
             )
             await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
             logger.info("RF status request sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF status request failed: %s", exc, exc_info=True)
@@ -662,6 +665,7 @@ class MeshcoreTCPBridge:
         try:
             packet, _ts = PacketBuilder.create_telem_request(contact, identity)
             await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
             logger.info("RF telemetry request sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF telemetry request failed: %s", exc, exc_info=True)
@@ -676,6 +680,7 @@ class MeshcoreTCPBridge:
             dest_hash = int(contact.public_key[:2], 16)
             packet = PacketBuilder.create_trace(tag=tag, auth_code=0, flags=0, path=[dest_hash])
             await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
             logger.info("RF path discovery (trace) sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF path discovery failed: %s", exc, exc_info=True)
@@ -690,9 +695,44 @@ class MeshcoreTCPBridge:
             dest_hash = int(contact.public_key[:2], 16)
             packet = PacketBuilder.create_trace(tag=tag, auth_code=0, flags=1, path=[dest_hash])
             await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
             logger.info("RF reset path (trace) sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF reset path failed: %s", exc, exc_info=True)
+
+    def _record_tx_packet(self, packet) -> None:
+        handler = getattr(self.daemon, "repeater_handler", None)
+        if not handler:
+            return
+        try:
+            pkt_hash = packet.get_packet_hash_hex(16) if hasattr(packet, "get_packet_hash_hex") else ""
+            packet_record = {
+                "timestamp": time.time(),
+                "payload_length": len(packet.payload) if getattr(packet, "payload", None) else 0,
+                "type": packet.get_payload_type(),
+                "route": packet.get_route_type(),
+                "length": len(packet.payload or b""),
+                "rssi": 0,
+                "snr": 0,
+                "score": 0,
+                "tx_delay_ms": 0,
+                "transmitted": True,
+                "is_duplicate": False,
+                "packet_hash": pkt_hash,
+                "drop_reason": None,
+                "path_hash": None,
+                "src_hash": None,
+                "dst_hash": None,
+                "original_path": None,
+                "forwarded_path": None,
+                "raw_packet": packet.write_to().hex() if hasattr(packet, "write_to") else None,
+                "lbt_attempts": 0,
+                "lbt_backoff_delays_ms": None,
+                "lbt_channel_busy": False,
+            }
+            handler.log_trace_record(packet_record)
+        except Exception as exc:
+            logger.debug("Failed to record RF TX packet: %s", exc)
 
     def _pymc_status_to_meshcore(self, data: bytes) -> Optional[bytes]:
         try:
