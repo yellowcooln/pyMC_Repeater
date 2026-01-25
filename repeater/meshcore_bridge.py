@@ -293,7 +293,7 @@ class MeshcoreTCPBridge:
             node_name = info.get("node_name") or "Unknown"
             contact_type = info.get("contact_type")
             is_repeater = bool(info.get("is_repeater"))
-            node_type = int(contact_type) if contact_type is not None else (2 if is_repeater else 1)
+            node_type = self._coerce_contact_type(contact_type, is_repeater)
 
             out_path_len = -1
             flags = 0
@@ -319,6 +319,23 @@ class MeshcoreTCPBridge:
             )
 
         return contacts
+
+    def _coerce_contact_type(self, contact_type, is_repeater: bool) -> int:
+        if contact_type is None:
+            return 2 if is_repeater else 1
+        if isinstance(contact_type, int):
+            return contact_type
+        if isinstance(contact_type, str):
+            lookup = {
+                "repeater": 2,
+                "room_server": 3,
+                "roomserver": 3,
+                "sensor": 4,
+                "client": 1,
+                "node": 1,
+            }
+            return lookup.get(contact_type.strip().lower(), 2 if is_repeater else 1)
+        return 2 if is_repeater else 1
 
     async def _send_self_telemetry(self, writer: asyncio.StreamWriter) -> None:
         prefix = self._local_pubkey_prefix()
