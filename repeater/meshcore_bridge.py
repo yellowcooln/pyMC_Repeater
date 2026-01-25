@@ -8,6 +8,9 @@ from typing import Coroutine, List, Optional
 
 from pymc_core.protocol.packet_builder import PacketBuilder
 from pymc_core.node.handlers.protocol_request import REQ_TYPE_GET_STATUS
+from pymc_core.protocol.constants import PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE
+from pymc_core.protocol.crypto import CryptoUtils
+from pymc_core.protocol.identity import Identity
 
 logger = logging.getLogger("MeshcoreBridge")
 
@@ -63,6 +66,7 @@ class MeshcoreTCPBridge:
         self.host = host
         self.port = port
         self._server: Optional[asyncio.base_events.Server] = None
+        self._pending_requests: dict[tuple[int, str], dict] = {}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
@@ -178,6 +182,7 @@ class MeshcoreTCPBridge:
             if cmd == CMD_SEND_STATUSREQ:
                 contact = self._contact_from_payload(payload, offset=1)
                 if contact:
+                    self._register_pending(contact, "status", writer)
                     self._schedule_rf_task(self._send_rf_status_request(contact), "status_request")
                     pubkey_prefix = bytes.fromhex(contact.public_key)[:6]
                     await asyncio.sleep(0.05)
@@ -405,6 +410,7 @@ class MeshcoreTCPBridge:
 
         if req_type == BINREQ_STATUS:
             if contact:
+                self._register_pending(contact, "status", writer)
                 self._schedule_rf_task(self._send_rf_status_request(contact), "status_request")
             status_bytes = self._build_status_payload()
             await self._send_binary_response(writer, tag, status_bytes)
@@ -412,6 +418,7 @@ class MeshcoreTCPBridge:
 
         if req_type == BINREQ_TELEMETRY:
             if contact:
+                self._register_pending(contact, "telemetry", writer)
                 self._schedule_rf_task(self._send_rf_telem_request(contact), "telemetry_request")
             await self._send_binary_response(writer, tag, b"")
             return
@@ -425,6 +432,14 @@ class MeshcoreTCPBridge:
     async def _send_status_response(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes) -> None:
         status_bytes = self._build_status_payload()
         payload = bytes([PKT_STATUS_RESPONSE, 0x00]) + pubkey_prefix[:6] + status_bytes
+        await self._send_packet(writer, payload)
+
+    async def _send_status_response_bytes(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes, status_bytes: bytes) -> None:
+        payload = bytes([PKT_STATUS_RESPONSE, 0x00]) + pubkey_prefix[:6] + status_bytes
+        await self._send_packet(writer, payload)
+
+    async def _send_telemetry_response_bytes(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes, lpp_bytes: bytes) -> None:
+        payload = bytes([PKT_TELEMETRY_RESPONSE]) + pubkey_prefix[:6] + lpp_bytes
         await self._send_packet(writer, payload)
 
     async def _send_login_success(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes) -> None:
@@ -530,6 +545,73 @@ class MeshcoreTCPBridge:
         except Exception as exc:
             logger.error("Failed to schedule RF %s: %s", action, exc)
 
+    def _register_pending(self, contact: "_SimpleContact", kind: str, writer: asyncio.StreamWriter) -> None:
+        try:
+            contact_hash = int(contact.public_key[:2], 16)
+        except Exception:
+            return
+        self._pending_requests[(contact_hash, kind)] = {"writer": writer, "contact": contact, "ts": time.time()}
+
+    async def handle_rf_packet(self, packet) -> bool:
+        payload_type = packet.get_payload_type()
+        if payload_type not in (PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE):
+            return False
+        if len(packet.payload) < 3:
+            return False
+
+        dest_hash = packet.payload[0]
+        src_hash = packet.payload[1]
+        encrypted_data = bytes(packet.payload[2:])
+
+        # Only process if we have pending requests for this source hash
+        pending_status = self._pending_requests.get((src_hash, "status"))
+        pending_telemetry = self._pending_requests.get((src_hash, "telemetry"))
+        if not pending_status and not pending_telemetry:
+            return False
+
+        contact = None
+        if pending_status:
+            contact = pending_status.get("contact")
+        if not contact and pending_telemetry:
+            contact = pending_telemetry.get("contact")
+        if not contact:
+            return False
+
+        identity = self.daemon.local_identity
+        if not identity:
+            return False
+
+        try:
+            contact_pubkey = bytes.fromhex(contact.public_key)
+            peer_id = Identity(contact_pubkey)
+            shared_secret = peer_id.calc_shared_secret(identity.get_private_key())
+            aes_key = shared_secret[:16]
+            plaintext = CryptoUtils.mac_then_decrypt(aes_key, shared_secret, encrypted_data)
+        except Exception as exc:
+            logger.error("Failed to decrypt RF response: %s", exc)
+            return False
+
+        if not plaintext or len(plaintext) < 4:
+            return False
+
+        # Strip reflected timestamp (first 4 bytes)
+        payload = plaintext[4:]
+        pubkey_prefix = contact_pubkey[:6]
+
+        if pending_status and len(payload) >= 58:
+            status_bytes = self._pymc_status_to_meshcore(payload[:58])
+            if status_bytes:
+                await self._send_status_response_bytes(pending_status["writer"], pubkey_prefix, status_bytes)
+            self._pending_requests.pop((src_hash, "status"), None)
+            return True
+
+        if pending_telemetry and len(payload) > 0:
+            await self._send_telemetry_response_bytes(pending_telemetry["writer"], pubkey_prefix, payload)
+            self._pending_requests.pop((src_hash, "telemetry"), None)
+            return True
+
+        return False
+
     async def _send_rf_login(self, contact: "_SimpleContact", password: str) -> None:
         identity = self.daemon.local_identity
         dispatcher = self.daemon.dispatcher
@@ -611,6 +693,57 @@ class MeshcoreTCPBridge:
             logger.info("RF reset path (trace) sent to %s", contact.public_key[:12])
         except Exception as exc:
             logger.error("RF reset path failed: %s", exc, exc_info=True)
+
+    def _pymc_status_to_meshcore(self, data: bytes) -> Optional[bytes]:
+        try:
+            if len(data) < 58:
+                return None
+            values = struct.unpack("<HHhhIIIIIIIIIhIII", data[:58])
+            batt_mv = values[0]
+            tx_queue = values[1]
+            noise_floor = values[2]
+            last_rssi = values[3]
+            nb_recv = values[4]
+            nb_sent = values[5]
+            airtime = values[6]
+            uptime = values[7]
+            sent_flood = values[8]
+            sent_direct = values[9]
+            recv_flood = values[10]
+            recv_direct = values[11]
+            err_events = values[12]
+            last_snr = values[13]
+            direct_dups = values[14]
+            flood_dups = values[15]
+            rx_airtime = values[16]
+
+            err_events_16 = min(int(err_events), 0xFFFF)
+            direct_dups_16 = min(int(direct_dups), 0xFFFF)
+            flood_dups_16 = min(int(flood_dups), 0xFFFF)
+
+            return struct.pack(
+                "<HHhhIIIIIIIIIhHHI",
+                batt_mv,
+                tx_queue,
+                noise_floor,
+                last_rssi,
+                nb_recv,
+                nb_sent,
+                airtime,
+                uptime,
+                sent_flood,
+                sent_direct,
+                recv_flood,
+                recv_direct,
+                err_events_16,
+                last_snr,
+                direct_dups_16,
+                flood_dups_16,
+                rx_airtime,
+            )
+        except Exception as exc:
+            logger.error("Failed to convert status payload: %s", exc)
+            return None
 
 
 class _SimpleContact:

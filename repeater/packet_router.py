@@ -72,7 +72,16 @@ class PacketRouter:
 
         payload_type = packet.get_payload_type()
         processed_by_injection = False
-        
+
+        # Allow MeshCore bridge to consume RF responses before other handlers
+        if getattr(self.daemon, "meshcore_bridge", None):
+            try:
+                handled = await self.daemon.meshcore_bridge.handle_rf_packet(packet)
+                if handled:
+                    processed_by_injection = True
+            except Exception as e:
+                logger.error(f"MeshCore bridge RF handler error: {e}", exc_info=True)
+
         # Route to specific handlers for parsing only
         if payload_type == TraceHandler.payload_type():
             # Process trace packet
