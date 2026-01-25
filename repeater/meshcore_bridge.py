@@ -42,6 +42,7 @@ CMD_SEND_MSG = 0x02
 CMD_GET_MSG = 0x0A
 CMD_GET_SELF_TELEMETRY = 0x27
 CMD_BINARY_REQ = 0x32
+CMD_SET_OTHER_PARAMS = 0x26
 
 # Binary request types (from meshcore BinaryReqType)
 BINREQ_STATUS = 0x01
@@ -119,6 +120,10 @@ class MeshcoreTCPBridge:
             return
 
         if cmd == CMD_SET_TIME:
+            await self._send_ok(writer)
+            return
+
+        if cmd == CMD_SET_OTHER_PARAMS:
             await self._send_ok(writer)
             return
 
