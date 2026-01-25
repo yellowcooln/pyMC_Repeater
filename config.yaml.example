@@ -61,6 +61,15 @@ repeater:
     # Controls how long users stay logged in before needing to re-authenticate
     jwt_expiry_minutes: 60
 
+# MeshCore TCP bridge (optional, for Home Assistant meshcore-ha TCP mode)
+meshcore_bridge:
+  # Enable MeshCore TCP bridge
+  enabled: false
+
+  # TCP listen host/port (meshcore-ha default TCP port is 5000)
+  host: "0.0.0.0"
+  port: 5000
+
 # Mesh Network Configuration
 mesh:
   # Global flood policy - controls whether the repeater allows or denies flooding by default

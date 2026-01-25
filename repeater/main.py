@@ -7,6 +7,7 @@ from repeater.config import get_radio_for_board, load_config
 from repeater.config_manager import ConfigManager
 from repeater.engine import RepeaterHandler
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
+from repeater.meshcore_bridge import MeshcoreTCPBridge
 from repeater.handler_helpers import TraceHelper, DiscoveryHelper, AdvertHelper, LoginHelper, TextHelper, PathHelper, ProtocolRequestHelper
 from repeater.packet_router import PacketRouter
 from repeater.identity_manager import IdentityManager
@@ -27,6 +28,7 @@ class RepeaterDaemon:
         self.identity_manager = None
         self.config_manager = None
         self.http_server = None
+        self.meshcore_bridge = None
         self.trace_helper = None
         self.advert_helper = None
         self.discovery_helper = None
@@ -500,6 +502,17 @@ class RepeaterDaemon:
         except Exception as e:
             logger.error(f"Failed to start HTTP server: {e}")
 
+        # Start MeshCore TCP bridge (optional)
+        bridge_cfg = self.config.get("meshcore_bridge", {})
+        if bridge_cfg.get("enabled", False):
+            bridge_host = bridge_cfg.get("host", "0.0.0.0")
+            bridge_port = int(bridge_cfg.get("port", 5000))
+            try:
+                self.meshcore_bridge = MeshcoreTCPBridge(self, host=bridge_host, port=bridge_port)
+                await self.meshcore_bridge.start()
+            except Exception as e:
+                logger.error(f"Failed to start MeshCore TCP bridge: {e}")
+
         # Run dispatcher (handles RX/TX via pymc_core)
         try:
             await self.dispatcher.run_forever()
@@ -509,6 +522,8 @@ class RepeaterDaemon:
                 await self.router.stop()
             if self.http_server:
                 self.http_server.stop()
+            if self.meshcore_bridge:
+                await self.meshcore_bridge.stop()
 
 
 def main():
