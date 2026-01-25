@@ -359,7 +359,8 @@ class MeshcoreTCPBridge:
         pubkey_prefix = dst[:6]
 
         tag = await self._send_msg_sent(writer)
-        await asyncio.sleep(0.05)
+        # Give client time to register pending binary request before responding
+        await asyncio.sleep(0.2)
 
         if req_type == BINREQ_STATUS:
             status_bytes = self._build_status_payload()
