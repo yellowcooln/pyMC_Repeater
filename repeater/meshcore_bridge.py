@@ -22,6 +22,8 @@ PKT_NO_MORE_MSGS = 0x0A
 PKT_BATTERY = 0x0C
 PKT_DEVICE_INFO = 0x0D
 PKT_STATUS_RESPONSE = 0x87
+PKT_LOGIN_SUCCESS = 0x85
+PKT_LOGIN_FAILED = 0x86
 PKT_TELEMETRY_RESPONSE = 0x8B
 PKT_BINARY_RESPONSE = 0x8C
 
@@ -141,12 +143,17 @@ class MeshcoreTCPBridge:
             return
 
         if cmd in (CMD_SEND_LOGIN, CMD_SEND_STATUSREQ, CMD_SEND_LOGOUT, CMD_SEND_MSG):
-            tag = await self._send_msg_sent(writer)
+            await self._send_msg_sent(writer)
             if cmd == CMD_SEND_STATUSREQ:
                 pubkey_prefix = self._extract_pubkey_prefix(payload, offset=1, length=32)
                 if pubkey_prefix:
                     await asyncio.sleep(0.05)
                     await self._send_status_response(writer, pubkey_prefix)
+            if cmd == CMD_SEND_LOGIN:
+                pubkey_prefix = self._extract_pubkey_prefix(payload, offset=1, length=32)
+                if pubkey_prefix:
+                    await asyncio.sleep(0.05)
+                    await self._send_login_success(writer, pubkey_prefix)
             return
 
         logger.debug("Unhandled MeshCore command: 0x%02X", cmd)
@@ -372,6 +379,12 @@ class MeshcoreTCPBridge:
     async def _send_status_response(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes) -> None:
         status_bytes = self._build_status_payload()
         payload = bytes([PKT_STATUS_RESPONSE, 0x00]) + pubkey_prefix[:6] + status_bytes
+        await self._send_packet(writer, payload)
+
+    async def _send_login_success(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes) -> None:
+        # Permissions: bit0=admin
+        perms = 0x01
+        payload = bytes([PKT_LOGIN_SUCCESS, perms]) + pubkey_prefix[:6]
         await self._send_packet(writer, payload)
 
     def _build_status_payload(self) -> bytes:
