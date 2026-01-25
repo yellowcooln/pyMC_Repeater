@@ -1,9 +1,13 @@
 import asyncio
 import logging
 import os
+import random
 import struct
 import time
-from typing import List, Optional
+from typing import Coroutine, List, Optional
+
+from pymc_core.protocol.packet_builder import PacketBuilder
+from pymc_core.node.handlers.protocol_request import REQ_TYPE_GET_STATUS
 
 logger = logging.getLogger("MeshcoreBridge")
 
@@ -33,6 +37,7 @@ CMD_GET_CONTACTS = 0x04
 CMD_GET_TIME = 0x05
 CMD_SET_TIME = 0x06
 CMD_SEND_ADVERT = 0x07
+CMD_RESET_PATH = 0x0D
 CMD_GET_BAT = 0x14
 CMD_DEVICE_QUERY = 0x16
 CMD_SEND_LOGIN = 0x1A
@@ -43,6 +48,7 @@ CMD_GET_MSG = 0x0A
 CMD_GET_SELF_TELEMETRY = 0x27
 CMD_BINARY_REQ = 0x32
 CMD_SET_OTHER_PARAMS = 0x26
+CMD_SEND_PATH_DISCOVERY = 0x34
 
 # Binary request types (from meshcore BinaryReqType)
 BINREQ_STATUS = 0x01
@@ -119,6 +125,13 @@ class MeshcoreTCPBridge:
             await self._send_ok(writer)
             return
 
+        if cmd == CMD_RESET_PATH:
+            await self._send_ok(writer)
+            contact = self._contact_from_payload(payload, offset=1)
+            if contact:
+                self._schedule_rf_task(self._send_rf_reset_path(contact), "reset_path")
+            return
+
         if cmd == CMD_SET_TIME:
             await self._send_ok(writer)
             return
@@ -140,7 +153,20 @@ class MeshcoreTCPBridge:
             return
 
         if cmd == CMD_GET_SELF_TELEMETRY:
-            await self._send_self_telemetry(writer)
+            if len(payload) >= 37:
+                await self._send_msg_sent(writer)
+                contact = self._contact_from_payload(payload, offset=5)
+                if contact:
+                    self._schedule_rf_task(self._send_rf_telem_request(contact), "telemetry_request")
+            else:
+                await self._send_self_telemetry(writer)
+            return
+
+        if cmd == CMD_SEND_PATH_DISCOVERY:
+            await self._send_msg_sent(writer)
+            contact = self._contact_from_payload(payload, offset=2)
+            if contact:
+                self._schedule_rf_task(self._send_rf_path_discovery(contact), "path_discovery")
             return
 
         if cmd == CMD_BINARY_REQ:
@@ -150,15 +176,24 @@ class MeshcoreTCPBridge:
         if cmd in (CMD_SEND_LOGIN, CMD_SEND_STATUSREQ, CMD_SEND_LOGOUT, CMD_SEND_MSG):
             await self._send_msg_sent(writer)
             if cmd == CMD_SEND_STATUSREQ:
-                pubkey_prefix = self._extract_pubkey_prefix(payload, offset=1, length=32)
-                if pubkey_prefix:
+                contact = self._contact_from_payload(payload, offset=1)
+                if contact:
+                    self._schedule_rf_task(self._send_rf_status_request(contact), "status_request")
+                    pubkey_prefix = bytes.fromhex(contact.public_key)[:6]
                     await asyncio.sleep(0.05)
                     await self._send_status_response(writer, pubkey_prefix)
             if cmd == CMD_SEND_LOGIN:
-                pubkey_prefix = self._extract_pubkey_prefix(payload, offset=1, length=32)
-                if pubkey_prefix:
+                contact = self._contact_from_payload(payload, offset=1)
+                password = self._parse_login_password(payload, offset=1 + 32)
+                if contact and password is not None:
+                    self._schedule_rf_task(self._send_rf_login(contact, password), "login")
+                    pubkey_prefix = bytes.fromhex(contact.public_key)[:6]
                     await asyncio.sleep(0.05)
                     await self._send_login_success(writer, pubkey_prefix)
+            if cmd == CMD_SEND_LOGOUT:
+                contact = self._contact_from_payload(payload, offset=1)
+                if contact:
+                    self._schedule_rf_task(self._send_rf_logout(contact), "logout")
             return
 
         logger.debug("Unhandled MeshCore command: 0x%02X", cmd)
@@ -362,17 +397,22 @@ class MeshcoreTCPBridge:
         dst = payload[1:33]
         req_type = payload[33]
         pubkey_prefix = dst[:6]
+        contact = self._contact_from_pubkey_bytes(dst)
 
         tag = await self._send_msg_sent(writer)
         # Give client time to register pending binary request before responding
         await asyncio.sleep(0.2)
 
         if req_type == BINREQ_STATUS:
+            if contact:
+                self._schedule_rf_task(self._send_rf_status_request(contact), "status_request")
             status_bytes = self._build_status_payload()
             await self._send_binary_response(writer, tag, status_bytes)
             return
 
         if req_type == BINREQ_TELEMETRY:
+            if contact:
+                self._schedule_rf_task(self._send_rf_telem_request(contact), "telemetry_request")
             await self._send_binary_response(writer, tag, b"")
             return
 
@@ -465,3 +505,116 @@ class MeshcoreTCPBridge:
             return None
         dst = payload[offset:offset + length]
         return dst[:6]
+
+    def _contact_from_payload(self, payload: bytes, offset: int) -> Optional["_SimpleContact"]:
+        if len(payload) < offset + 32:
+            return None
+        return self._contact_from_pubkey_bytes(payload[offset:offset + 32])
+
+    def _contact_from_pubkey_bytes(self, pubkey_bytes: bytes) -> Optional["_SimpleContact"]:
+        if len(pubkey_bytes) < 32:
+            return None
+        return _SimpleContact(public_key=pubkey_bytes[:32].hex(), contact_type=2)
+
+    def _parse_login_password(self, payload: bytes, offset: int) -> Optional[str]:
+        if len(payload) <= offset:
+            return ""
+        try:
+            return payload[offset:].decode("utf-8", "ignore")
+        except Exception:
+            return ""
+
+    def _schedule_rf_task(self, coro: Coroutine, action: str) -> None:
+        try:
+            asyncio.create_task(coro)
+        except Exception as exc:
+            logger.error("Failed to schedule RF %s: %s", action, exc)
+
+    async def _send_rf_login(self, contact: "_SimpleContact", password: str) -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF login skipped: local identity or dispatcher missing")
+            return
+        try:
+            packet = PacketBuilder.create_login_packet(contact, identity, password)
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            logger.info("RF login sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF login failed: %s", exc, exc_info=True)
+
+    async def _send_rf_logout(self, contact: "_SimpleContact") -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF logout skipped: local identity or dispatcher missing")
+            return
+        try:
+            packet, crc = PacketBuilder.create_logout_packet(contact, identity)
+            await dispatcher.send_packet(packet, wait_for_ack=False, expected_crc=crc)
+            logger.info("RF logout sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF logout failed: %s", exc, exc_info=True)
+
+    async def _send_rf_status_request(self, contact: "_SimpleContact") -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF status request skipped: local identity or dispatcher missing")
+            return
+        try:
+            packet, _ts = PacketBuilder.create_protocol_request(
+                contact=contact, local_identity=identity, protocol_code=REQ_TYPE_GET_STATUS
+            )
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            logger.info("RF status request sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF status request failed: %s", exc, exc_info=True)
+
+    async def _send_rf_telem_request(self, contact: "_SimpleContact") -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF telemetry request skipped: local identity or dispatcher missing")
+            return
+        try:
+            packet, _ts = PacketBuilder.create_telem_request(contact, identity)
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            logger.info("RF telemetry request sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF telemetry request failed: %s", exc, exc_info=True)
+
+    async def _send_rf_path_discovery(self, contact: "_SimpleContact") -> None:
+        dispatcher = self.daemon.dispatcher
+        if not dispatcher:
+            logger.warning("RF path discovery skipped: dispatcher missing")
+            return
+        try:
+            tag = random.randint(0, 0xFFFFFFFF)
+            dest_hash = int(contact.public_key[:2], 16)
+            packet = PacketBuilder.create_trace(tag=tag, auth_code=0, flags=0, path=[dest_hash])
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            logger.info("RF path discovery (trace) sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF path discovery failed: %s", exc, exc_info=True)
+
+    async def _send_rf_reset_path(self, contact: "_SimpleContact") -> None:
+        dispatcher = self.daemon.dispatcher
+        if not dispatcher:
+            logger.warning("RF reset path skipped: dispatcher missing")
+            return
+        try:
+            tag = random.randint(0, 0xFFFFFFFF)
+            dest_hash = int(contact.public_key[:2], 16)
+            packet = PacketBuilder.create_trace(tag=tag, auth_code=0, flags=1, path=[dest_hash])
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            logger.info("RF reset path (trace) sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF reset path failed: %s", exc, exc_info=True)
+
+
+class _SimpleContact:
+    def __init__(self, public_key: str, contact_type: int = 2, sync_since: int = 0) -> None:
+        self.public_key = public_key
+        self.type = contact_type
+        self.sync_since = sync_since
