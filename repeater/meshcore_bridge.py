@@ -524,43 +524,44 @@ class MeshcoreTCPBridge:
 
         return bytes(filtered)
 
-    def _filter_lpp_drop_digital(self, lpp_bytes: bytes) -> bytes:
+    def _filter_remote_lpp(self, lpp_bytes: bytes) -> bytes:
         if not lpp_bytes:
             return b""
 
         filtered = bytearray()
         i = 0
-        while i + 1 < len(lpp_bytes):
+        while i + 3 < len(lpp_bytes):
             channel = lpp_bytes[i]
             lpp_type = lpp_bytes[i + 1]
             i += 2
 
-            if lpp_type in (0x00, 0x01):  # digital in/out (1 byte)
-                payload_len = 1
-            elif lpp_type in (0x02, 0x03, 0x67, 0x71):  # analog/temperature/baro (2 bytes)
-                payload_len = 2
-            elif lpp_type == 0x68:  # humidity (1 byte)
-                payload_len = 1
-            elif lpp_type == 0x65:  # illuminance (2 bytes)
-                payload_len = 2
-            elif lpp_type == 0x66:  # presence (1 byte)
-                payload_len = 1
-            elif lpp_type == 0x73:  # accelerometer (6 bytes)
-                payload_len = 6
-            elif lpp_type == 0x88:  # gps (9 bytes)
-                payload_len = 9
-            else:
-                filtered.extend(lpp_bytes[i - 2 :])
-                break
+            if lpp_type == 0x67:
+                if i + 2 > len(lpp_bytes):
+                    break
+                raw = lpp_bytes[i : i + 2]
+                temp10 = int.from_bytes(raw, "big", signed=True)
+                if temp10 != -1:
+                    filtered.extend([channel, lpp_type])
+                    filtered.extend(raw)
+                i += 2
+                continue
 
-            if i + payload_len > len(lpp_bytes):
-                break
+            # Skip payload for known types we don't want to forward
+            if lpp_type in (0x00, 0x01, 0x68, 0x66):  # digital/humidity/presence (1 byte)
+                i += 1
+                continue
+            if lpp_type in (0x02, 0x03, 0x71, 0x65):  # analog/baro/illuminance (2 bytes)
+                i += 2
+                continue
+            if lpp_type == 0x73:  # accelerometer (6 bytes)
+                i += 6
+                continue
+            if lpp_type == 0x88:  # gps (9 bytes)
+                i += 9
+                continue
 
-            if lpp_type not in (0x00, 0x01):
-                filtered.extend([channel, lpp_type])
-                filtered.extend(lpp_bytes[i : i + payload_len])
-
-            i += payload_len
+            # Unknown type: stop parsing to avoid misalignment
+            break
 
         return bytes(filtered)
 
@@ -610,9 +611,11 @@ class MeshcoreTCPBridge:
 
     async def _send_telemetry_response_bytes(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes, lpp_bytes: bytes) -> None:
         original_hex = lpp_bytes.hex() if lpp_bytes else ""
-        lpp_bytes = self._filter_lpp_drop_digital(lpp_bytes)
-        if pubkey_prefix[:6] == self._local_pubkey_prefix():
+        is_local = pubkey_prefix[:6] == self._local_pubkey_prefix()
+        if is_local:
             lpp_bytes = self._filter_self_lpp(lpp_bytes)
+        else:
+            lpp_bytes = self._filter_remote_lpp(lpp_bytes)
         logger.info(
             "Telemetry LPP pubkey=%s original=%s filtered=%s",
             pubkey_prefix[:6].hex(),
