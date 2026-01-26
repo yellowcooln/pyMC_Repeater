@@ -414,10 +414,10 @@ class MeshcoreTCPBridge:
             logger.info("CPU temp unavailable; self telemetry empty")
             return b""
 
-        # Cayenne LPP temperature: channel, type(0x67), int16 value (0.1C), big-endian
+        # Cayenne LPP temperature (MeshCore/HA expects type first): type(0x67), channel, int16 value (0.1C), big-endian
         temp10 = int(round(temp_c * 10))
         logger.info("CPU temp %.2fC; self telemetry temp10=%s", temp_c, temp10)
-        return bytes([1, 0x67]) + temp10.to_bytes(2, "big", signed=True)
+        return bytes([0x67, 1]) + temp10.to_bytes(2, "big", signed=True)
 
     def _get_cpu_temp_c(self) -> float | None:
         def _is_valid_temp(value: float | None) -> bool:
@@ -542,7 +542,8 @@ class MeshcoreTCPBridge:
                 temp10 = int.from_bytes(raw, "big", signed=True)
                 if temp10 != -1:
                     # Force all remote temperatures to channel 1
-                    filtered.extend([1, lpp_type])
+                    # MeshCore/HA expects type first, then channel
+                    filtered.extend([lpp_type, 1])
                     filtered.extend(raw)
                 i += 2
                 continue
