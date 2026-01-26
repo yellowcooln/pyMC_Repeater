@@ -417,6 +417,14 @@ class MeshcoreTCPBridge:
         return bytes([1, 0x67]) + temp10.to_bytes(2, "big", signed=True)
 
     def _get_cpu_temp_c(self) -> float | None:
+        def _is_valid_temp(value: float | None) -> bool:
+            if value is None:
+                return False
+            try:
+                return 1.0 <= float(value) <= 120.0
+            except (TypeError, ValueError):
+                return False
+
         temps = None
         try:
             repeater_handler = getattr(self.daemon, "repeater_handler", None)
@@ -428,24 +436,53 @@ class MeshcoreTCPBridge:
             temps = None
 
         if not temps:
-            return None
+            return self._read_sysfs_cpu_temp_c()
 
         preferred = ("cpu", "coretemp", "package", "soc", "thermal", "acpitz")
         for key in preferred:
             for name, value in temps.items():
                 if key in name.lower():
                     try:
-                        return float(value)
+                        temp = float(value)
+                        if _is_valid_temp(temp):
+                            return temp
                     except (TypeError, ValueError):
                         continue
 
         for value in temps.values():
             try:
-                return float(value)
+                temp = float(value)
+                if _is_valid_temp(temp):
+                    return temp
             except (TypeError, ValueError):
                 continue
 
-        return None
+        return self._read_sysfs_cpu_temp_c()
+
+    def _read_sysfs_cpu_temp_c(self) -> float | None:
+        paths = []
+        try:
+            from glob import glob
+            paths.extend(glob("/sys/class/thermal/thermal_zone*/temp"))
+            paths.extend(glob("/sys/class/hwmon/hwmon*/temp*_input"))
+        except Exception:
+            return None
+
+        temps = []
+        for path in paths:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    raw = handle.read().strip()
+                if not raw:
+                    continue
+                val = float(raw)
+                temp_c = val / 1000.0 if val > 1000 else val
+                if 1.0 <= temp_c <= 120.0:
+                    temps.append(temp_c)
+            except Exception:
+                continue
+
+        return max(temps) if temps else None
 
     def _filter_self_lpp(self, lpp_bytes: bytes) -> bytes:
         if not lpp_bytes:
