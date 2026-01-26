@@ -541,7 +541,8 @@ class MeshcoreTCPBridge:
                 raw = lpp_bytes[i : i + 2]
                 temp10 = int.from_bytes(raw, "big", signed=True)
                 if temp10 != -1:
-                    filtered.extend([channel, lpp_type])
+                    # Force all remote temperatures to channel 1
+                    filtered.extend([1, lpp_type])
                     filtered.extend(raw)
                 i += 2
                 continue
