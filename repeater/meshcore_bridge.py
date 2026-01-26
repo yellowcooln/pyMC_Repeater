@@ -404,16 +404,19 @@ class MeshcoreTCPBridge:
     async def _send_self_telemetry(self, writer: asyncio.StreamWriter) -> None:
         prefix = self._local_pubkey_prefix()
         lpp_bytes = self._build_self_telemetry_lpp()
+        logger.info("Self telemetry LPP bytes: %s", lpp_bytes.hex() if lpp_bytes else "<empty>")
         payload = bytes([PKT_TELEMETRY_RESPONSE]) + prefix + lpp_bytes
         await self._send_packet(writer, payload)
 
     def _build_self_telemetry_lpp(self) -> bytes:
         temp_c = self._get_cpu_temp_c()
         if temp_c is None:
+            logger.info("CPU temp unavailable; self telemetry empty")
             return b""
 
         # Cayenne LPP temperature: channel, type(0x67), int16 value (0.1C), big-endian
         temp10 = int(round(temp_c * 10))
+        logger.info("CPU temp %.2fC; self telemetry temp10=%s", temp_c, temp10)
         return bytes([1, 0x67]) + temp10.to_bytes(2, "big", signed=True)
 
     def _get_cpu_temp_c(self) -> float | None:
@@ -606,9 +609,16 @@ class MeshcoreTCPBridge:
         await self._send_packet(writer, payload)
 
     async def _send_telemetry_response_bytes(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes, lpp_bytes: bytes) -> None:
+        original_hex = lpp_bytes.hex() if lpp_bytes else ""
         lpp_bytes = self._filter_lpp_drop_digital(lpp_bytes)
         if pubkey_prefix[:6] == self._local_pubkey_prefix():
             lpp_bytes = self._filter_self_lpp(lpp_bytes)
+        logger.info(
+            "Telemetry LPP pubkey=%s original=%s filtered=%s",
+            pubkey_prefix[:6].hex(),
+            original_hex if original_hex else "<empty>",
+            lpp_bytes.hex() if lpp_bytes else "<empty>",
+        )
         payload = bytes([PKT_TELEMETRY_RESPONSE]) + pubkey_prefix[:6] + lpp_bytes
         await self._send_packet(writer, payload)
 
