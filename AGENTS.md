@@ -8,6 +8,7 @@ A MeshCore TCP bridge was added so meshcore-ha can connect to pyMC_Repeater via 
 - Responds to MeshCore protocol queries (appstart, device info, contacts, status, telemetry, etc.).
 - Transmits actual RF packets for login/logout, status, telemetry, and path discovery/reset.
 - Decrypts RF protocol responses and forwards them back to HA over TCP.
+- Normalizes radio/telemetry/battery reporting to keep HA sensors clean and accurate.
 
 ## Files Added/Modified
 
@@ -21,6 +22,13 @@ A MeshCore TCP bridge was added so meshcore-ha can connect to pyMC_Repeater via 
     - Telemetry request
     - Path discovery / reset path (best-effort trace)
   - Decrypts RF protocol responses (PAYLOAD_TYPE_RESPONSE / PATH) and forwards to HA.
+  - Sends DEVICE_INFO + CONTACTS on APPSTART so HA can populate contacts/node count.
+  - Reports battery at 4200 mV (full LiPo) in both BATTERY and status payloads.
+  - Uses Hz for radio frequency/bandwidth in SELF_INFO (no kHz scaling).
+  - Self telemetry reports CPU temperature on channel 1 (Cayenne LPP, °C).
+  - Filters self telemetry to only channel 1 temperature.
+  - Drops Digital Input/Output LPP types globally to avoid noisy HA sensors.
+  - Filters CONTACTS to match UI “Tracking” (contact types + last 7 days) and uses out_path_len=0.
 
 ### Modified
 - `repeater/main.py`
@@ -44,6 +52,7 @@ Use a different port if your UI is not on 8000 or if 5000 is in use.
 
 ### Implemented commands
 - `send_appstart` → `SELF_INFO`
+- `send_appstart` also sends `DEVICE_INFO` and `CONTACTS` for HA contact discovery
 - `device_query` → `DEVICE_INFO`
 - `get_contacts` → contacts from pyMC neighbor DB
 - `send_login` → `MSG_SENT` + `LOGIN_SUCCESS` (and RF login packet)
@@ -78,6 +87,7 @@ The bridge:
 - `Handle set_other_params command in MeshCore bridge`
 - `Inject RF packets for HA repeater commands`
 - `Forward RF protocol responses to HA over TCP`
+- `Fix radio units, battery, telemetry, and contact reporting for HA`
 
 ## Usage in HA
 Use meshcore-ha TCP mode and point it to the bridge host/port.

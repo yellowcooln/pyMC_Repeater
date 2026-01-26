@@ -115,6 +115,8 @@ class MeshcoreTCPBridge:
 
         if cmd == CMD_APPSTART:
             await self._send_self_info(writer)
+            await self._send_device_info(writer)
+            await self._send_contacts(writer)
             return
 
         if cmd == CMD_DEVICE_QUERY and len(payload) > 1 and payload[1] == 0x03:
@@ -230,8 +232,8 @@ class MeshcoreTCPBridge:
         await self._send_packet(writer, bytes([PKT_NO_MORE_MSGS]))
 
     async def _send_battery(self, writer: asyncio.StreamWriter) -> None:
-        # No battery on typical repeater hosts; report 0mV
-        payload = bytes([PKT_BATTERY]) + (0).to_bytes(2, "little")
+        # Report full LiPo to match HA expectations
+        payload = bytes([PKT_BATTERY]) + (4200).to_bytes(2, "little")
         await self._send_packet(writer, payload)
 
     async def _send_self_info(self, writer: asyncio.StreamWriter) -> None:
@@ -253,8 +255,9 @@ class MeshcoreTCPBridge:
         max_tx_power = tx_power
         adv_type = 2  # repeater
 
-        radio_freq = int(radio.get("frequency", 0) / 1000)  # Hz -> kHz
-        radio_bw = int(radio.get("bandwidth", 0) / 1000)  # Hz -> kHz
+        # MeshCore expects Hz values in SELF_INFO
+        radio_freq = int(radio.get("frequency", 0))
+        radio_bw = int(radio.get("bandwidth", 0))
         radio_sf = int(radio.get("spreading_factor", 7))
         radio_cr = int(radio.get("coding_rate", 5))
 
@@ -334,8 +337,16 @@ class MeshcoreTCPBridge:
         if self.daemon.repeater_handler and self.daemon.repeater_handler.storage:
             storage = self.daemon.repeater_handler.storage
 
+        # Match UI "Tracking" count: only include recent adverts and known contact types
+        allowed_types = {"chat node", "repeater", "room server"}
+        cutoff = time.time() - (168 * 3600)  # 7 days, matches UI hours=168
+
         neighbors = storage.get_neighbors() if storage else {}
         for pubkey_hex, info in neighbors.items():
+            contact_type = info.get("contact_type")
+            if not contact_type or str(contact_type).strip().lower() not in allowed_types:
+                continue
+
             try:
                 pubkey_bytes = bytes.fromhex(pubkey_hex)
             except Exception:
@@ -343,15 +354,16 @@ class MeshcoreTCPBridge:
 
             pubkey_bytes = pubkey_bytes[:32].ljust(32, b"\x00")
             node_name = info.get("node_name") or "Unknown"
-            contact_type = info.get("contact_type")
             is_repeater = bool(info.get("is_repeater"))
             node_type = self._coerce_contact_type(contact_type, is_repeater)
 
-            out_path_len = -1
+            out_path_len = 0
             flags = 0
 
             adv_name_bytes = node_name.encode("utf-8")[:32].ljust(32, b"\x00")
             last_seen = int(info.get("last_seen") or time.time())
+            if last_seen < cutoff:
+                continue
             lat = float(info.get("latitude") or 0.0)
             lon = float(info.get("longitude") or 0.0)
 
@@ -391,8 +403,126 @@ class MeshcoreTCPBridge:
 
     async def _send_self_telemetry(self, writer: asyncio.StreamWriter) -> None:
         prefix = self._local_pubkey_prefix()
-        payload = bytes([PKT_TELEMETRY_RESPONSE]) + prefix + b""
+        lpp_bytes = self._build_self_telemetry_lpp()
+        payload = bytes([PKT_TELEMETRY_RESPONSE]) + prefix + lpp_bytes
         await self._send_packet(writer, payload)
+
+    def _build_self_telemetry_lpp(self) -> bytes:
+        temp_c = self._get_cpu_temp_c()
+        if temp_c is None:
+            return b""
+
+        # Cayenne LPP temperature: channel, type(0x67), int16 value (0.1C), big-endian
+        temp10 = int(round(temp_c * 10))
+        return bytes([1, 0x67]) + temp10.to_bytes(2, "big", signed=True)
+
+    def _get_cpu_temp_c(self) -> float | None:
+        temps = None
+        try:
+            repeater_handler = getattr(self.daemon, "repeater_handler", None)
+            storage = getattr(repeater_handler, "storage", None) if repeater_handler else None
+            stats = storage.hardware_stats.get_stats() if storage and getattr(storage, "hardware_stats", None) else None
+            if isinstance(stats, dict):
+                temps = stats.get("temperatures")
+        except Exception:
+            temps = None
+
+        if not temps:
+            return None
+
+        preferred = ("cpu", "coretemp", "package", "soc", "thermal", "acpitz")
+        for key in preferred:
+            for name, value in temps.items():
+                if key in name.lower():
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        continue
+
+        for value in temps.values():
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+
+        return None
+
+    def _filter_self_lpp(self, lpp_bytes: bytes) -> bytes:
+        if not lpp_bytes:
+            return b""
+
+        filtered = bytearray()
+        i = 0
+        while i + 1 < len(lpp_bytes):
+            channel = lpp_bytes[i]
+            lpp_type = lpp_bytes[i + 1]
+            i += 2
+
+            # Keep only channel 1 temperature for self telemetry
+            if channel == 1 and lpp_type == 0x67 and i + 2 <= len(lpp_bytes):
+                filtered.extend([channel, lpp_type])
+                filtered.extend(lpp_bytes[i:i + 2])
+
+            # Skip payload for known types
+            if lpp_type in (0x00, 0x01):  # digital in/out (1 byte)
+                i += 1
+            elif lpp_type in (0x02, 0x03, 0x67, 0x71):  # analog/temperature/baro (2 bytes)
+                i += 2
+            elif lpp_type == 0x68:  # humidity (1 byte)
+                i += 1
+            elif lpp_type == 0x65:  # illuminance (2 bytes)
+                i += 2
+            elif lpp_type == 0x66:  # presence (1 byte)
+                i += 1
+            elif lpp_type == 0x73:  # accelerometer (6 bytes)
+                i += 6
+            elif lpp_type == 0x88:  # gps (9 bytes)
+                i += 9
+            else:
+                # Unknown type: stop to avoid misalignment
+                break
+
+        return bytes(filtered)
+
+    def _filter_lpp_drop_digital(self, lpp_bytes: bytes) -> bytes:
+        if not lpp_bytes:
+            return b""
+
+        filtered = bytearray()
+        i = 0
+        while i + 1 < len(lpp_bytes):
+            channel = lpp_bytes[i]
+            lpp_type = lpp_bytes[i + 1]
+            i += 2
+
+            if lpp_type in (0x00, 0x01):  # digital in/out (1 byte)
+                payload_len = 1
+            elif lpp_type in (0x02, 0x03, 0x67, 0x71):  # analog/temperature/baro (2 bytes)
+                payload_len = 2
+            elif lpp_type == 0x68:  # humidity (1 byte)
+                payload_len = 1
+            elif lpp_type == 0x65:  # illuminance (2 bytes)
+                payload_len = 2
+            elif lpp_type == 0x66:  # presence (1 byte)
+                payload_len = 1
+            elif lpp_type == 0x73:  # accelerometer (6 bytes)
+                payload_len = 6
+            elif lpp_type == 0x88:  # gps (9 bytes)
+                payload_len = 9
+            else:
+                filtered.extend(lpp_bytes[i - 2 :])
+                break
+
+            if i + payload_len > len(lpp_bytes):
+                break
+
+            if lpp_type not in (0x00, 0x01):
+                filtered.extend([channel, lpp_type])
+                filtered.extend(lpp_bytes[i : i + payload_len])
+
+            i += payload_len
+
+        return bytes(filtered)
 
     async def _handle_binary_req(self, payload: bytes, writer: asyncio.StreamWriter) -> None:
         if len(payload) < 34:
@@ -439,6 +569,9 @@ class MeshcoreTCPBridge:
         await self._send_packet(writer, payload)
 
     async def _send_telemetry_response_bytes(self, writer: asyncio.StreamWriter, pubkey_prefix: bytes, lpp_bytes: bytes) -> None:
+        lpp_bytes = self._filter_lpp_drop_digital(lpp_bytes)
+        if pubkey_prefix[:6] == self._local_pubkey_prefix():
+            lpp_bytes = self._filter_self_lpp(lpp_bytes)
         payload = bytes([PKT_TELEMETRY_RESPONSE]) + pubkey_prefix[:6] + lpp_bytes
         await self._send_packet(writer, payload)
 
@@ -486,7 +619,7 @@ class MeshcoreTCPBridge:
 
         stats = struct.pack(
             "<HHhhIIIIIIIIIhIII",
-            0,  # batt_milli_volts
+            4200,  # batt_milli_volts (full LiPo)
             0,  # curr_tx_queue_len
             int(noise_floor),
             int(last_rssi),
