@@ -100,6 +100,7 @@ show_main_menu() {
     CHOICE=$($DIALOG --backtitle "pyMC Repeater Management" --title "pyMC Repeater Management" --menu "\nCurrent Status: $status\n\nChoose an action:" 18 70 9 \
         "install" "Install pyMC Repeater" \
         "upgrade" "Upgrade existing installation" \
+        "reset" "reset existing installation to defaults" \
         "uninstall" "Remove pyMC Repeater completely" \
         "config" "Configure radio settings" \
         "start" "Start the service" \
@@ -120,6 +121,13 @@ show_main_menu() {
         "upgrade")
             if is_installed; then
                 upgrade_repeater
+            else
+                show_error "pyMC Repeater is not installed!\n\nUse 'install' first."
+            fi
+            ;;
+        "reset")
+            if is_installed; then
+                reset_repeater
             else
                 show_error "pyMC Repeater is not installed!\n\nUse 'install' first."
             fi
@@ -336,6 +344,8 @@ EOF
         echo "Please check the error messages above and try again."
         read -p "Press Enter to continue..." || true
     fi
+    systemctl daemon-reload
+    systemctl start "$SERVICE_NAME"
     
     # Show final results
     sleep 2
@@ -371,6 +381,74 @@ EOF
     fi
 }
 
+# Reset function
+reset_repeater() {
+    local config_file="$CONFIG_DIR/config.yaml"
+    local updated_example="$CONFIG_DIR/config.yaml.example"
+
+    if [ "$EUID" -ne 0 ]; then
+        show_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
+        return
+    fi
+    
+    local current_version=$(get_version)
+    
+    if ask_yes_no "Confirm Reset of pyMC Repeater restoring to default configuration.\n\nContinue?"; then
+        
+        # Show info that upgrade is starting
+        show_info "Reseting" "Starting reset process...\n\nProgress will be shown in the terminal."
+        
+        echo "=== Reset Progress ==="
+        echo "[1/4] Stopping service..."
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        
+        echo "[2/4] Backing up configuration..."
+        if [ -d "$CONFIG_DIR" ]; then
+            cp -r "$CONFIG_DIR" "$CONFIG_DIR.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            echo "    ✓ Configuration backed up"
+        fi
+	echo "3/4 Restore default config.yaml from config.yaml.example"
+	cp $updated_example $config_file
+	sleep 5
+        # Reload systemd and start the service
+	echo "4/4 Restart the service"
+        systemctl daemon-reload
+        systemctl start "$SERVICE_NAME"
+        # Show final results
+        sleep 2
+        local ip_address=$(hostname -I | awk '{print $1}')
+        if is_running; then
+            clear
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "        ✓ Reset Completed Successfully!"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "Service is running on:"
+            echo "  → http://$ip_address:8000"
+            echo ""
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "        NEXT STEP: Complete Web Setup Wizard"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "Open the web dashboard in your browser to complete setup:"
+            echo ""
+            echo "  1. Navigate to: http://$ip_address:8000"
+            echo "  2. Complete the 5-step setup wizard:"
+            echo "     • Choose repeater name"
+            echo "     • Select hardware board"
+            echo "     • Configure radio settings"
+            echo "     • Set admin password"
+            echo "  3. Log in to your configured repeater"
+            echo ""
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            read -p "Press Enter to return to main menu..." || true
+        else
+            show_error "Installation completed but service failed to start!\n\nCheck logs from the main menu for details."
+        fi
+    fi
+}
+        
 # Upgrade function
 upgrade_repeater() {
     if [ "$EUID" -ne 0 ]; then
