@@ -33,6 +33,13 @@ case "$1" in
             chmod 640 /etc/pymc_repeater/config.yaml
         fi
 
+        # Copy channels config if no channels file exists
+        if [ ! -f /etc/pymc_repeater/channels.yaml ]; then
+            cp /usr/share/pymc_repeater/channels.yaml.example /etc/pymc_repeater/channels.yaml
+            chown pymc-repeater:pymc-repeater /etc/pymc_repeater/channels.yaml
+            chmod 640 /etc/pymc_repeater/channels.yaml
+        fi
+
         # Install pymc_core from PyPI if not already installed
         if ! python3 -c "import pymc_core" 2>/dev/null; then
             echo "Installing pymc_core dependency from PyPI..."

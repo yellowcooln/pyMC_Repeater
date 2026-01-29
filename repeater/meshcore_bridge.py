@@ -6,9 +6,11 @@ import struct
 import time
 from typing import Coroutine, List, Optional
 
+import yaml
+
 from pymc_core.protocol.packet_builder import PacketBuilder
 from pymc_core.node.handlers.protocol_request import REQ_TYPE_GET_STATUS
-from pymc_core.protocol.constants import PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE
+from pymc_core.protocol.constants import PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE, PAYLOAD_TYPE_TXT_MSG
 from pymc_core.protocol.crypto import CryptoUtils
 from pymc_core.protocol.identity import Identity
 
@@ -24,10 +26,13 @@ PKT_CONTACT = 0x03
 PKT_CONTACT_END = 0x04
 PKT_SELF_INFO = 0x05
 PKT_MSG_SENT = 0x06
+PKT_CONTACT_MSG_RECV = 0x07
+PKT_CHANNEL_MSG_RECV = 0x08
 PKT_CURRENT_TIME = 0x09
 PKT_NO_MORE_MSGS = 0x0A
 PKT_BATTERY = 0x0C
 PKT_DEVICE_INFO = 0x0D
+PKT_CHANNEL_INFO = 0x12
 PKT_STATUS_RESPONSE = 0x87
 PKT_LOGIN_SUCCESS = 0x85
 PKT_LOGIN_FAILED = 0x86
@@ -43,10 +48,12 @@ CMD_SEND_ADVERT = 0x07
 CMD_RESET_PATH = 0x0D
 CMD_GET_BAT = 0x14
 CMD_DEVICE_QUERY = 0x16
+CMD_GET_CHANNEL = 0x1F
 CMD_SEND_LOGIN = 0x1A
 CMD_SEND_STATUSREQ = 0x1B
 CMD_SEND_LOGOUT = 0x1D
 CMD_SEND_MSG = 0x02
+CMD_SEND_CHANNEL_MSG = 0x03
 CMD_GET_MSG = 0x0A
 CMD_GET_SELF_TELEMETRY = 0x27
 CMD_BINARY_REQ = 0x32
@@ -67,6 +74,9 @@ class MeshcoreTCPBridge:
         self.port = port
         self._server: Optional[asyncio.base_events.Server] = None
         self._pending_requests: dict[tuple[int, str], dict] = {}
+        self._channels_cache: Optional[list] = None
+        self._channels_mtime: Optional[float] = None
+        self._channels_path: Optional[str] = None
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
@@ -127,6 +137,11 @@ class MeshcoreTCPBridge:
             await self._send_contacts(writer)
             return
 
+        if cmd == CMD_GET_CHANNEL:
+            channel_idx = payload[1] if len(payload) > 1 else 0
+            await self._send_channel_info(writer, channel_idx)
+            return
+
         if cmd == CMD_SEND_ADVERT:
             await self._send_ok(writer)
             return
@@ -179,7 +194,15 @@ class MeshcoreTCPBridge:
             await self._handle_binary_req(payload, writer)
             return
 
-        if cmd in (CMD_SEND_LOGIN, CMD_SEND_STATUSREQ, CMD_SEND_LOGOUT, CMD_SEND_MSG):
+        if cmd == CMD_SEND_MSG:
+            await self._handle_send_msg(payload, writer)
+            return
+
+        if cmd == CMD_SEND_CHANNEL_MSG:
+            await self._handle_send_channel_msg(payload, writer)
+            return
+
+        if cmd in (CMD_SEND_LOGIN, CMD_SEND_STATUSREQ, CMD_SEND_LOGOUT):
             await self._send_msg_sent(writer)
             if cmd == CMD_SEND_STATUSREQ:
                 contact = self._contact_from_payload(payload, offset=1)
@@ -308,6 +331,13 @@ class MeshcoreTCPBridge:
         payload.extend(version_bytes)
 
         await self._send_packet(writer, bytes(payload))
+
+    async def _send_channel_info(self, writer: asyncio.StreamWriter, channel_idx: int) -> None:
+        name, secret = self._get_channel_info(channel_idx)
+        name_bytes = name.encode("utf-8")[:32].ljust(32, b"\x00")
+        secret_bytes = secret[:16].ljust(16, b"\x00")
+        payload = bytes([PKT_CHANNEL_INFO, channel_idx & 0xFF]) + name_bytes + secret_bytes
+        await self._send_packet(writer, payload)
 
     async def _send_contacts(self, writer: asyncio.StreamWriter) -> None:
         contacts = self._build_contacts()
@@ -719,6 +749,19 @@ class MeshcoreTCPBridge:
             return None
         return _SimpleContact(public_key=pubkey_bytes[:32].hex(), contact_type=2)
 
+    def _contact_from_prefix(self, prefix: bytes) -> Optional["_SimpleContact"]:
+        if not prefix or len(prefix) < 1:
+            return None
+        neighbor = self._lookup_neighbor_by_prefix(prefix)
+        if neighbor:
+            return _SimpleContact(
+                public_key=neighbor["public_key"],
+                contact_type=neighbor.get("type", 2),
+                out_path=neighbor.get("out_path"),
+                out_path_len=neighbor.get("out_path_len"),
+            )
+        return None
+
     def _parse_login_password(self, payload: bytes, offset: int) -> Optional[str]:
         if len(payload) <= offset:
             return ""
@@ -742,8 +785,10 @@ class MeshcoreTCPBridge:
 
     async def handle_rf_packet(self, packet) -> bool:
         payload_type = packet.get_payload_type()
-        if payload_type not in (PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE):
+        if payload_type not in (PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE, PAYLOAD_TYPE_TXT_MSG):
             return False
+        if payload_type == PAYLOAD_TYPE_TXT_MSG:
+            return await self._handle_rf_txt_msg(packet)
         if len(packet.payload) < 3:
             return False
 
@@ -799,6 +844,51 @@ class MeshcoreTCPBridge:
             return True
 
         return False
+
+    async def _handle_rf_txt_msg(self, packet) -> bool:
+        if len(packet.payload) < 4:
+            return False
+        src_hash = packet.payload[1]
+        pending_cmd = self._pending_requests.get((src_hash, "cmd"))
+        if not pending_cmd:
+            return False
+
+        contact = pending_cmd.get("contact")
+        if not contact:
+            return False
+
+        identity = self.daemon.local_identity
+        if not identity:
+            return False
+
+        try:
+            contact_pubkey = bytes.fromhex(contact.public_key)
+            peer_id = Identity(contact_pubkey)
+            shared_secret = peer_id.calc_shared_secret(identity.get_private_key())
+            aes_key = shared_secret[:16]
+            plaintext = CryptoUtils.mac_then_decrypt(aes_key, shared_secret, bytes(packet.payload[2:]))
+        except Exception as exc:
+            logger.error("Failed to decrypt RF text response: %s", exc)
+            return False
+
+        if not plaintext or len(plaintext) < 5:
+            return False
+
+        timestamp = int.from_bytes(plaintext[:4], "little")
+        flags = plaintext[4]
+        txt_type = (flags >> 2) & 0x3F
+        text = plaintext[5:].decode("utf-8", "ignore")
+        pubkey_prefix = contact_pubkey[:6]
+
+        await self._send_contact_msg_recv(
+            pending_cmd["writer"],
+            pubkey_prefix,
+            txt_type,
+            timestamp,
+            text,
+        )
+        self._pending_requests.pop((src_hash, "cmd"), None)
+        return True
 
     async def _send_rf_login(self, contact: "_SimpleContact", password: str) -> None:
         identity = self.daemon.local_identity
@@ -888,6 +978,269 @@ class MeshcoreTCPBridge:
         except Exception as exc:
             logger.error("RF reset path failed: %s", exc, exc_info=True)
 
+    async def _send_rf_text_message(self, contact: "_SimpleContact", message: str, attempt: int = 0) -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF text send skipped: local identity or dispatcher missing")
+            return
+        try:
+            packet, _crc = PacketBuilder.create_text_message(
+                contact=contact,
+                local_identity=identity,
+                message=message,
+                attempt=attempt,
+                message_type="direct",
+            )
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
+            logger.info("RF text message sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF text message failed: %s", exc, exc_info=True)
+
+    async def _send_rf_cli_command(self, contact: "_SimpleContact", command: str) -> None:
+        identity = self.daemon.local_identity
+        dispatcher = self.daemon.dispatcher
+        if not identity or not dispatcher:
+            logger.warning("RF CLI send skipped: local identity or dispatcher missing")
+            return
+        try:
+            contact_pubkey = bytes.fromhex(contact.public_key)
+            peer_id = Identity(contact_pubkey)
+            shared_secret = peer_id.calc_shared_secret(identity.get_private_key())
+            flags = (0x01 << 2)  # txt_type=CLI data
+            timestamp = int(time.time())
+            plaintext = timestamp.to_bytes(4, "little") + bytes([flags]) + command.encode("utf-8")
+            route_type = "direct"
+            if getattr(contact, "out_path_len", 0) < 0:
+                route_type = "flood"
+            packet = PacketBuilder.create_datagram(
+                ptype=PAYLOAD_TYPE_TXT_MSG,
+                dest=Identity(contact_pubkey),
+                local_identity=identity,
+                secret=shared_secret,
+                plaintext=plaintext,
+                route_type=route_type,
+            )
+            if getattr(contact, "out_path_len", 0) > 0 and getattr(contact, "out_path", None):
+                packet.path = bytearray(contact.out_path[: contact.out_path_len])
+                packet.path_len = contact.out_path_len
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
+            logger.info("RF CLI command sent to %s", contact.public_key[:12])
+        except Exception as exc:
+            logger.error("RF CLI command failed: %s", exc, exc_info=True)
+
+    async def _handle_send_msg(self, payload: bytes, writer: asyncio.StreamWriter) -> None:
+        if len(payload) < 3:
+            await self._send_error(writer, 0)
+            return
+        mode = payload[1]
+        if mode == 0x01:
+            await self._handle_send_cmd(payload, writer)
+            return
+        if mode != 0x00:
+            await self._send_error(writer, 0)
+            return
+
+        if len(payload) < 3 + 4 + 6:
+            await self._send_error(writer, 0)
+            return
+        attempt = payload[2]
+        dst_offset = 3 + 4
+        dst_prefix = payload[dst_offset : dst_offset + 6]
+        msg = payload[dst_offset + 6 :].decode("utf-8", "ignore")
+
+        await self._send_msg_sent(writer)
+
+        contact = self._contact_from_prefix(dst_prefix)
+        if contact:
+            self._schedule_rf_task(self._send_rf_text_message(contact, msg, attempt=attempt), "send_msg")
+        else:
+            logger.warning("send_msg: contact not found for prefix %s", dst_prefix.hex())
+
+    async def _handle_send_cmd(self, payload: bytes, writer: asyncio.StreamWriter) -> None:
+        if len(payload) < 3 + 4 + 6:
+            await self._send_error(writer, 0)
+            return
+        if payload[1] != 0x01:
+            await self._send_error(writer, 0)
+            return
+        dst_offset = 3 + 4
+        dst_prefix = payload[dst_offset : dst_offset + 6]
+        cmd = payload[dst_offset + 6 :].decode("utf-8", "ignore")
+
+        await self._send_msg_sent(writer)
+
+        contact = self._contact_from_prefix(dst_prefix)
+        if contact:
+            self._register_pending(contact, "cmd", writer)
+            self._schedule_rf_task(self._send_rf_cli_command(contact, cmd), "send_cmd")
+        else:
+            logger.warning("send_cmd: contact not found for prefix %s", dst_prefix.hex())
+
+    async def _handle_send_channel_msg(self, payload: bytes, writer: asyncio.StreamWriter) -> None:
+        if len(payload) < 1 + 1 + 1 + 4:
+            await self._send_error(writer, 0)
+            return
+        channel_idx = payload[2]
+        msg = payload[3 + 4 :].decode("utf-8", "ignore")
+        await self._send_ok(writer)
+        self._schedule_rf_task(
+            self._send_rf_channel_message(channel_idx, msg),
+            "send_channel_msg",
+        )
+
+    async def _send_contact_msg_recv(
+        self,
+        writer: asyncio.StreamWriter,
+        pubkey_prefix: bytes,
+        txt_type: int,
+        sender_timestamp: int,
+        text: str,
+    ) -> None:
+        payload = bytearray()
+        payload.append(PKT_CONTACT_MSG_RECV)
+        payload.extend(pubkey_prefix[:6])
+        payload.append(0)  # path_len
+        payload.append(txt_type & 0xFF)
+        payload.extend(int(sender_timestamp).to_bytes(4, "little"))
+        payload.extend(text.encode("utf-8"))
+        await self._send_packet(writer, bytes(payload))
+
+    def _lookup_neighbor_by_prefix(self, prefix: bytes) -> Optional[dict]:
+        storage = None
+        if self.daemon.repeater_handler and self.daemon.repeater_handler.storage:
+            storage = self.daemon.repeater_handler.storage
+        neighbors = storage.get_neighbors() if storage else {}
+        prefix_hex = prefix.hex()
+        for pubkey_hex, info in neighbors.items():
+            if pubkey_hex.startswith(prefix_hex):
+                return {
+                    "public_key": pubkey_hex,
+                    "type": self._coerce_contact_type(info.get("contact_type"), bool(info.get("is_repeater"))),
+                    "out_path": info.get("out_path"),
+                    "out_path_len": info.get("out_path_len", 0),
+                }
+        return None
+
+    def _load_channels(self) -> list:
+        if self._channels_path is None:
+            config_path = getattr(self.daemon, "config_path", None)
+            if config_path:
+                base_dir = os.path.dirname(config_path)
+            else:
+                base_dir = "/etc/pymc_repeater"
+            self._channels_path = os.path.join(base_dir, "channels.yaml")
+
+        try:
+            stat = os.stat(self._channels_path)
+        except FileNotFoundError:
+            self._channels_cache = []
+            self._channels_mtime = None
+            return []
+        except OSError:
+            return self._channels_cache or []
+
+        if self._channels_mtime is not None and stat.st_mtime == self._channels_mtime:
+            return self._channels_cache or []
+
+        try:
+            with open(self._channels_path, "r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle) or {}
+        except Exception as exc:
+            logger.warning("Failed to read channels file: %s", exc)
+            return self._channels_cache or []
+
+        channels = data.get("channels") if isinstance(data, dict) else data
+        if not isinstance(channels, list):
+            channels = []
+
+        self._channels_cache = channels
+        self._channels_mtime = stat.st_mtime
+        return channels
+
+    def _get_channel_info(self, channel_idx: int) -> tuple[str, bytes]:
+        channels = self._load_channels()
+        if channels and 0 <= channel_idx < len(channels):
+            entry = channels[channel_idx] or {}
+            name = entry.get("name") or entry.get("channel_name") or f"channel_{channel_idx}"
+            secret = entry.get("secret") or entry.get("channel_secret") or b""
+            if isinstance(secret, str):
+                try:
+                    secret_bytes = bytes.fromhex(secret)
+                except ValueError:
+                    secret_bytes = secret.encode("utf-8")
+            else:
+                secret_bytes = bytes(secret) if secret else b""
+            return name, secret_bytes
+
+        config = self.daemon.config or {}
+        candidates = [
+            config.get("channels"),
+            config.get("repeater", {}).get("channels"),
+            config.get("radio", {}).get("channels"),
+        ]
+        channels = None
+        for candidate in candidates:
+            if isinstance(candidate, list):
+                channels = candidate
+                break
+        if channels and 0 <= channel_idx < len(channels):
+            entry = channels[channel_idx] or {}
+            name = entry.get("name") or entry.get("channel_name") or f"channel_{channel_idx}"
+            secret = entry.get("secret") or entry.get("channel_secret") or b""
+            if isinstance(secret, str):
+                try:
+                    secret_bytes = bytes.fromhex(secret)
+                except ValueError:
+                    secret_bytes = secret.encode("utf-8")
+            else:
+                secret_bytes = bytes(secret) if secret else b""
+            return name, secret_bytes
+
+        return f"channel_{channel_idx}", b""
+
+    async def _send_rf_channel_message(self, channel_idx: int, message: str) -> None:
+        dispatcher = self.daemon.dispatcher
+        identity = self.daemon.local_identity
+        if not dispatcher or not identity:
+            logger.warning("RF channel send skipped: local identity or dispatcher missing")
+            return
+
+        channels = self._load_channels()
+        if not channels or channel_idx < 0 or channel_idx >= len(channels):
+            logger.warning("RF channel send skipped: channel %s not configured", channel_idx)
+            return
+
+        entry = channels[channel_idx] or {}
+        name = entry.get("name") or entry.get("channel_name") or f"channel_{channel_idx}"
+        secret = entry.get("secret") or entry.get("channel_secret") or ""
+        if not secret:
+            logger.warning("RF channel send skipped: channel %s has no secret", channel_idx)
+            return
+
+        node_name = (
+            self.daemon.config.get("repeater", {}).get("node_name")
+            if self.daemon and self.daemon.config
+            else "PyMC-Repeater"
+        )
+
+        channels_config = [{"name": name, "secret": secret}]
+        try:
+            packet = PacketBuilder.create_group_datagram(
+                group_name=name,
+                local_identity=identity,
+                message=message,
+                sender_name=node_name or "PyMC-Repeater",
+                channels_config=channels_config,
+            )
+            await dispatcher.send_packet(packet, wait_for_ack=False)
+            self._record_tx_packet(packet)
+            logger.info("RF channel message sent to %s", name)
+        except Exception as exc:
+            logger.error("RF channel message failed: %s", exc, exc_info=True)
+
     def _record_tx_packet(self, packet) -> None:
         handler = getattr(self.daemon, "repeater_handler", None)
         if not handler:
@@ -975,7 +1328,16 @@ class MeshcoreTCPBridge:
 
 
 class _SimpleContact:
-    def __init__(self, public_key: str, contact_type: int = 2, sync_since: int = 0) -> None:
+    def __init__(
+        self,
+        public_key: str,
+        contact_type: int = 2,
+        sync_since: int = 0,
+        out_path: Optional[list] = None,
+        out_path_len: Optional[int] = None,
+    ) -> None:
         self.public_key = public_key
         self.type = contact_type
         self.sync_since = sync_since
+        self.out_path = out_path or []
+        self.out_path_len = out_path_len if out_path_len is not None else 0

@@ -1,0 +1,6 @@
+channels:
+  - name: "general"
+    # Use a 16-byte hex string or any UTF-8 string (will be used as-is).
+    secret: "00112233445566778899aabbccddeeff"
+  - name: "alerts"
+    secret: "alerts-secret"

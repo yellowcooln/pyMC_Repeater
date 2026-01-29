@@ -211,7 +211,7 @@ install_repeater() {
     echo "25"; echo "# Installing system dependencies..."
     apt-get update -qq
     apt-get install -y libffi-dev jq pip python3-rrdtool wget swig build-essential python3-dev
-    pip install --break-system-packages setuptools_scm >/dev/null 2>&1 || true
+    pip install setuptools_scm >/dev/null 2>&1 || true
     
     # Install mikefarah yq v4 if not already installed
     if ! command -v yq &> /dev/null || [[ "$(yq --version 2>&1)" != *"mikefarah/yq"* ]]; then
@@ -323,7 +323,7 @@ EOF
     echo "Note: Using optimized binary wheels for faster installation"
     echo ""
     
-    if pip install --break-system-packages --force-reinstall --no-cache-dir .; then
+    if pip install --no-cache-dir .; then
         echo ""
         echo "✓ Python package installation completed successfully!"
         
@@ -399,7 +399,7 @@ upgrade_repeater() {
         apt-get update -qq
 
         apt-get install -y libffi-dev jq pip python3-rrdtool wget swig build-essential python3-dev
-        pip install --break-system-packages setuptools_scm >/dev/null 2>&1 || true
+        pip install setuptools_scm >/dev/null 2>&1 || true
         
         # Install mikefarah yq v4 if not already installed
         if ! command -v yq &> /dev/null || [[ "$(yq --version 2>&1)" != *"mikefarah/yq"* ]]; then
@@ -508,7 +508,7 @@ EOF
         echo ""
         
         # Upgrade packages (uses cache for unchanged dependencies - much faster)
-        if python3 -m pip install --break-system-packages --upgrade --upgrade-strategy eager .; then
+        if python3 -m pip install --upgrade --upgrade-strategy eager .; then
             echo ""
             echo "✓ Package and dependencies updated successfully!"
         else
