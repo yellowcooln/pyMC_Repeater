@@ -10,7 +10,12 @@ import yaml
 
 from pymc_core.protocol.packet_builder import PacketBuilder
 from pymc_core.node.handlers.protocol_request import REQ_TYPE_GET_STATUS
-from pymc_core.protocol.constants import PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_RESPONSE, PAYLOAD_TYPE_TXT_MSG
+from pymc_core.protocol.constants import (
+    PAYLOAD_TYPE_PATH,
+    PAYLOAD_TYPE_RESPONSE,
+    PAYLOAD_TYPE_TXT_MSG,
+    PAYLOAD_TYPE_GRP_TXT,
+)
 from pymc_core.protocol.crypto import CryptoUtils
 from pymc_core.protocol.identity import Identity
 
@@ -1070,10 +1075,13 @@ class MeshcoreTCPBridge:
             logger.warning("RF text send skipped: local identity or dispatcher missing")
             return
         try:
-            route_type = "flood" if getattr(contact, "out_path_len", 0) < 0 else "direct"
+            out_path_len = getattr(contact, "out_path_len", None)
+            out_path_val = getattr(contact, "out_path", None)
+            has_path = bool(out_path_val) and (out_path_len is not None and out_path_len > 0)
+            route_type = "direct" if has_path else "flood"
             out_path = None
-            if route_type == "direct" and getattr(contact, "out_path_len", 0) > 0 and getattr(contact, "out_path", None):
-                out_path = list(contact.out_path[: contact.out_path_len])
+            if route_type == "direct" and out_path_val:
+                out_path = list(out_path_val[: out_path_len])
             packet, _crc = PacketBuilder.create_text_message(
                 contact=contact,
                 local_identity=identity,
@@ -1218,13 +1226,23 @@ class MeshcoreTCPBridge:
         prefix_hex = prefix.hex()
         for pubkey_hex, info in neighbors.items():
             if pubkey_hex.startswith(prefix_hex):
+                out_path = info.get("out_path")
+                if isinstance(out_path, (bytes, bytearray)):
+                    out_path_list = list(out_path)
+                elif isinstance(out_path, list):
+                    out_path_list = out_path
+                else:
+                    out_path_list = []
+
                 out_path_len = info.get("out_path_len")
                 if out_path_len is None:
+                    out_path_len = len(out_path_list) if out_path_list else -1
+                if out_path_len == 0 and not out_path_list:
                     out_path_len = -1
                 return {
                     "public_key": pubkey_hex,
                     "type": self._coerce_contact_type(info.get("contact_type"), bool(info.get("is_repeater"))),
-                    "out_path": info.get("out_path"),
+                    "out_path": out_path_list,
                     "out_path_len": out_path_len,
                 }
         return None
@@ -1339,6 +1357,10 @@ class MeshcoreTCPBridge:
                 message=message,
                 sender_name=node_name or "PyMC-Repeater",
                 channels_config=channels_config,
+            )
+            # Force flood routing for group/channel messages
+            packet.header = PacketBuilder._create_header(
+                PAYLOAD_TYPE_GRP_TXT, route_type="flood", has_routing_path=False
             )
             logger.info("RF channel send: channel=%s msg_len=%s", name, len(message))
             await dispatcher.send_packet(packet, wait_for_ack=False)
