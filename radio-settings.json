@@ -110,6 +110,23 @@
       "use_dio3_tcxo": true,
       "use_dio2_rf": true,
       "preamble_length": 17
+    },
+    "nebrahat": {
+      "name": "NebraHat-2W",
+      "bus_id": 0,
+      "cs_id": 0,
+      "cs_pin": 8,
+      "reset_pin": 18,
+      "busy_pin": 4,
+      "irq_pin": 22,
+      "txen_pin": -1,
+      "rxen_pin": 25,
+      "txled_pin": -1,
+      "rxled_pin": -1,
+      "tx_power": 8,
+      "use_dio3_tcxo": true,
+      "use_dio2_rf": true,
+      "preamble_length": 17
     }
   }
 }
