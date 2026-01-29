@@ -1070,16 +1070,25 @@ class MeshcoreTCPBridge:
             logger.warning("RF text send skipped: local identity or dispatcher missing")
             return
         try:
+            route_type = "flood" if getattr(contact, "out_path_len", 0) < 0 else "direct"
+            out_path = None
+            if route_type == "direct" and getattr(contact, "out_path_len", 0) > 0 and getattr(contact, "out_path", None):
+                out_path = list(contact.out_path[: contact.out_path_len])
             packet, _crc = PacketBuilder.create_text_message(
                 contact=contact,
                 local_identity=identity,
                 message=message,
                 attempt=attempt,
-                message_type="direct",
+                message_type=route_type,
+                out_path=out_path,
             )
             await dispatcher.send_packet(packet, wait_for_ack=False)
             self._record_tx_packet(packet)
-            logger.info("RF text message sent to %s", contact.public_key[:12])
+            logger.info(
+                "RF text message sent to %s route=%s",
+                contact.public_key[:12],
+                route_type,
+            )
         except Exception as exc:
             logger.error("RF text message failed: %s", exc, exc_info=True)
 
@@ -1209,11 +1218,14 @@ class MeshcoreTCPBridge:
         prefix_hex = prefix.hex()
         for pubkey_hex, info in neighbors.items():
             if pubkey_hex.startswith(prefix_hex):
+                out_path_len = info.get("out_path_len")
+                if out_path_len is None:
+                    out_path_len = -1
                 return {
                     "public_key": pubkey_hex,
                     "type": self._coerce_contact_type(info.get("contact_type"), bool(info.get("is_repeater"))),
                     "out_path": info.get("out_path"),
-                    "out_path_len": info.get("out_path_len", 0),
+                    "out_path_len": out_path_len,
                 }
         return None
 
