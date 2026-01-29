@@ -66,6 +66,50 @@ BINREQ_TELEMETRY = 0x03
 
 DEFAULT_TIMEOUT_MS = 4000
 
+CMD_NAMES = {
+    CMD_APPSTART: "APPSTART",
+    CMD_GET_CONTACTS: "GET_CONTACTS",
+    CMD_GET_TIME: "GET_TIME",
+    CMD_SET_TIME: "SET_TIME",
+    CMD_SEND_ADVERT: "SEND_ADVERT",
+    CMD_RESET_PATH: "RESET_PATH",
+    CMD_GET_BAT: "GET_BAT",
+    CMD_DEVICE_QUERY: "DEVICE_QUERY",
+    CMD_GET_CHANNEL: "GET_CHANNEL",
+    CMD_SEND_LOGIN: "SEND_LOGIN",
+    CMD_SEND_STATUSREQ: "SEND_STATUSREQ",
+    CMD_SEND_LOGOUT: "SEND_LOGOUT",
+    CMD_SEND_MSG: "SEND_MSG",
+    CMD_SEND_CHANNEL_MSG: "SEND_CHANNEL_MSG",
+    CMD_GET_MSG: "GET_MSG",
+    CMD_GET_SELF_TELEMETRY: "GET_SELF_TELEMETRY",
+    CMD_BINARY_REQ: "BINARY_REQ",
+    CMD_SET_OTHER_PARAMS: "SET_OTHER_PARAMS",
+    CMD_SEND_PATH_DISCOVERY: "PATH_DISCOVERY",
+}
+
+PKT_NAMES = {
+    PKT_OK: "OK",
+    PKT_ERROR: "ERROR",
+    PKT_CONTACT_START: "CONTACT_START",
+    PKT_CONTACT: "CONTACT",
+    PKT_CONTACT_END: "CONTACT_END",
+    PKT_SELF_INFO: "SELF_INFO",
+    PKT_MSG_SENT: "MSG_SENT",
+    PKT_CONTACT_MSG_RECV: "CONTACT_MSG_RECV",
+    PKT_CHANNEL_MSG_RECV: "CHANNEL_MSG_RECV",
+    PKT_CURRENT_TIME: "CURRENT_TIME",
+    PKT_NO_MORE_MSGS: "NO_MORE_MSGS",
+    PKT_BATTERY: "BATTERY",
+    PKT_DEVICE_INFO: "DEVICE_INFO",
+    PKT_CHANNEL_INFO: "CHANNEL_INFO",
+    PKT_STATUS_RESPONSE: "STATUS_RESPONSE",
+    PKT_LOGIN_SUCCESS: "LOGIN_SUCCESS",
+    PKT_LOGIN_FAILED: "LOGIN_FAILED",
+    PKT_TELEMETRY_RESPONSE: "TELEMETRY_RESPONSE",
+    PKT_BINARY_RESPONSE: "BINARY_RESPONSE",
+}
+
 
 class MeshcoreTCPBridge:
     def __init__(self, daemon, host: str = "0.0.0.0", port: int = 5000) -> None:
@@ -77,6 +121,14 @@ class MeshcoreTCPBridge:
         self._channels_cache: Optional[list] = None
         self._channels_mtime: Optional[float] = None
         self._channels_path: Optional[str] = None
+        try:
+            debug_enabled = bool(
+                (daemon.config or {}).get("meshcore_bridge", {}).get("debug", False)
+            )
+            if debug_enabled:
+                logger.setLevel(logging.DEBUG)
+        except Exception:
+            pass
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
@@ -122,31 +174,39 @@ class MeshcoreTCPBridge:
         if not payload:
             return
         cmd = payload[0]
+        logger.info("TCP cmd %s (0x%02X) len=%s", CMD_NAMES.get(cmd, "UNKNOWN"), cmd, len(payload))
+        logger.debug("TCP cmd payload: %s", payload.hex())
 
         if cmd == CMD_APPSTART:
+            logger.info("TCP APPSTART -> SELF_INFO/DEVICE_INFO/CONTACTS")
             await self._send_self_info(writer)
             await self._send_device_info(writer)
             await self._send_contacts(writer)
             return
 
         if cmd == CMD_DEVICE_QUERY and len(payload) > 1 and payload[1] == 0x03:
+            logger.info("TCP DEVICE_QUERY -> DEVICE_INFO")
             await self._send_device_info(writer)
             return
 
         if cmd == CMD_GET_CONTACTS:
+            logger.info("TCP GET_CONTACTS -> CONTACTS")
             await self._send_contacts(writer)
             return
 
         if cmd == CMD_GET_CHANNEL:
             channel_idx = payload[1] if len(payload) > 1 else 0
+            logger.info("TCP GET_CHANNEL idx=%s -> CHANNEL_INFO", channel_idx)
             await self._send_channel_info(writer, channel_idx)
             return
 
         if cmd == CMD_SEND_ADVERT:
+            logger.info("TCP SEND_ADVERT -> OK")
             await self._send_ok(writer)
             return
 
         if cmd == CMD_RESET_PATH:
+            logger.info("TCP RESET_PATH -> OK + RF trace")
             await self._send_ok(writer)
             contact = self._contact_from_payload(payload, offset=1)
             if contact:
@@ -154,36 +214,44 @@ class MeshcoreTCPBridge:
             return
 
         if cmd == CMD_SET_TIME:
+            logger.info("TCP SET_TIME -> OK")
             await self._send_ok(writer)
             return
 
         if cmd == CMD_SET_OTHER_PARAMS:
+            logger.info("TCP SET_OTHER_PARAMS -> OK")
             await self._send_ok(writer)
             return
 
         if cmd == CMD_GET_TIME:
+            logger.info("TCP GET_TIME -> CURRENT_TIME")
             await self._send_current_time(writer)
             return
 
         if cmd == CMD_GET_BAT:
+            logger.info("TCP GET_BAT -> BATTERY")
             await self._send_battery(writer)
             return
 
         if cmd == CMD_GET_MSG:
+            logger.info("TCP GET_MSG -> NO_MORE_MSGS")
             await self._send_no_more_msgs(writer)
             return
 
         if cmd == CMD_GET_SELF_TELEMETRY:
             if len(payload) >= 37:
+                logger.info("TCP GET_SELF_TELEMETRY (remote) -> MSG_SENT + RF telem")
                 await self._send_msg_sent(writer)
                 contact = self._contact_from_payload(payload, offset=5)
                 if contact:
                     self._schedule_rf_task(self._send_rf_telem_request(contact), "telemetry_request")
             else:
+                logger.info("TCP GET_SELF_TELEMETRY (local) -> TELEMETRY_RESPONSE")
                 await self._send_self_telemetry(writer)
             return
 
         if cmd == CMD_SEND_PATH_DISCOVERY:
+            logger.info("TCP PATH_DISCOVERY -> MSG_SENT + RF trace")
             await self._send_msg_sent(writer)
             contact = self._contact_from_payload(payload, offset=2)
             if contact:
@@ -191,18 +259,22 @@ class MeshcoreTCPBridge:
             return
 
         if cmd == CMD_BINARY_REQ:
+            logger.info("TCP BINARY_REQ -> MSG_SENT + RF + BINARY_RESPONSE")
             await self._handle_binary_req(payload, writer)
             return
 
         if cmd == CMD_SEND_MSG:
+            logger.info("TCP SEND_MSG -> MSG_SENT + RF")
             await self._handle_send_msg(payload, writer)
             return
 
         if cmd == CMD_SEND_CHANNEL_MSG:
+            logger.info("TCP SEND_CHANNEL_MSG -> OK + RF")
             await self._handle_send_channel_msg(payload, writer)
             return
 
         if cmd in (CMD_SEND_LOGIN, CMD_SEND_STATUSREQ, CMD_SEND_LOGOUT):
+            logger.info("TCP %s -> MSG_SENT + RF", CMD_NAMES.get(cmd, "UNKNOWN"))
             await self._send_msg_sent(writer)
             if cmd == CMD_SEND_STATUSREQ:
                 contact = self._contact_from_payload(payload, offset=1)
@@ -231,6 +303,10 @@ class MeshcoreTCPBridge:
 
     async def _send_packet(self, writer: asyncio.StreamWriter, payload: bytes) -> None:
         pkt = bytes([FRAME_START]) + len(payload).to_bytes(2, byteorder="little") + payload
+        if payload:
+            pkt_type = payload[0]
+            logger.info("TCP resp %s (0x%02X) len=%s", PKT_NAMES.get(pkt_type, "UNKNOWN"), pkt_type, len(payload))
+            logger.debug("TCP resp payload: %s", payload.hex())
         writer.write(pkt)
         await writer.drain()
 
@@ -772,6 +848,7 @@ class MeshcoreTCPBridge:
 
     def _schedule_rf_task(self, coro: Coroutine, action: str) -> None:
         try:
+            logger.info("Scheduling RF action: %s", action)
             asyncio.create_task(coro)
         except Exception as exc:
             logger.error("Failed to schedule RF %s: %s", action, exc)
@@ -834,11 +911,13 @@ class MeshcoreTCPBridge:
         if pending_status and len(payload) >= 58:
             status_bytes = self._pymc_status_to_meshcore(payload[:58])
             if status_bytes:
+                logger.info("RF status response pubkey=%s", pubkey_prefix[:6].hex())
                 await self._send_status_response_bytes(pending_status["writer"], pubkey_prefix, status_bytes)
             self._pending_requests.pop((src_hash, "status"), None)
             return True
 
         if pending_telemetry and len(payload) > 0:
+            logger.info("RF telemetry response pubkey=%s len=%s", pubkey_prefix[:6].hex(), len(payload))
             await self._send_telemetry_response_bytes(pending_telemetry["writer"], pubkey_prefix, payload)
             self._pending_requests.pop((src_hash, "telemetry"), None)
             return True
@@ -880,6 +959,12 @@ class MeshcoreTCPBridge:
         text = plaintext[5:].decode("utf-8", "ignore")
         pubkey_prefix = contact_pubkey[:6]
 
+        logger.info(
+            "RF text response pubkey=%s txt_type=%s text=%s",
+            pubkey_prefix[:6].hex(),
+            txt_type,
+            text,
+        )
         await self._send_contact_msg_recv(
             pending_cmd["writer"],
             pubkey_prefix,
@@ -1051,6 +1136,12 @@ class MeshcoreTCPBridge:
         dst_prefix = payload[dst_offset : dst_offset + 6]
         msg = payload[dst_offset + 6 :].decode("utf-8", "ignore")
 
+        logger.info(
+            "TCP send_msg: dst=%s attempt=%s msg_len=%s",
+            dst_prefix.hex(),
+            attempt,
+            len(msg),
+        )
         await self._send_msg_sent(writer)
 
         contact = self._contact_from_prefix(dst_prefix)
@@ -1070,6 +1161,7 @@ class MeshcoreTCPBridge:
         dst_prefix = payload[dst_offset : dst_offset + 6]
         cmd = payload[dst_offset + 6 :].decode("utf-8", "ignore")
 
+        logger.info("TCP send_cmd: dst=%s cmd=%s", dst_prefix.hex(), cmd)
         await self._send_msg_sent(writer)
 
         contact = self._contact_from_prefix(dst_prefix)
@@ -1085,6 +1177,7 @@ class MeshcoreTCPBridge:
             return
         channel_idx = payload[2]
         msg = payload[3 + 4 :].decode("utf-8", "ignore")
+        logger.info("TCP send_channel_msg: channel_idx=%s msg_len=%s", channel_idx, len(msg))
         await self._send_ok(writer)
         self._schedule_rf_task(
             self._send_rf_channel_message(channel_idx, msg),
@@ -1235,6 +1328,7 @@ class MeshcoreTCPBridge:
                 sender_name=node_name or "PyMC-Repeater",
                 channels_config=channels_config,
             )
+            logger.info("RF channel send: channel=%s msg_len=%s", name, len(message))
             await dispatcher.send_packet(packet, wait_for_ack=False)
             self._record_tx_packet(packet)
             logger.info("RF channel message sent to %s", name)
