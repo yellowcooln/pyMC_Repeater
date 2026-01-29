@@ -65,8 +65,6 @@ repeater:
 meshcore_bridge:
   # Enable MeshCore TCP bridge
   enabled: false
-  # Verbose logging for MeshCore TCP bridge
-  debug: true
 
   # TCP listen host/port (meshcore-ha default TCP port is 5000)
   host: "0.0.0.0"
