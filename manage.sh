@@ -261,6 +261,13 @@ install_repeater() {
     if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
         cp "$SCRIPT_DIR/config.yaml.example" "$CONFIG_DIR/config.yaml"
     fi
+    # Channels config (for MeshCore HA channel support)
+    if [ -f "$SCRIPT_DIR/channels.yaml.example" ]; then
+        cp "$SCRIPT_DIR/channels.yaml.example" "$CONFIG_DIR/channels.yaml.example"
+        if [ ! -f "$CONFIG_DIR/channels.yaml" ]; then
+            cp "$SCRIPT_DIR/channels.yaml.example" "$CONFIG_DIR/channels.yaml"
+        fi
+    fi
     
     echo "55"; echo "# Installing systemd service..."
     cp "$SCRIPT_DIR/pymc-repeater.service" /etc/systemd/system/
@@ -452,6 +459,13 @@ upgrade_repeater() {
             echo "    ✓ Configuration validated and updated"
         else
             echo "    ⚠ Configuration validation failed, keeping existing config"
+        fi
+        # Ensure channels config exists after upgrade
+        if [ -f "$SCRIPT_DIR/channels.yaml.example" ]; then
+            cp "$SCRIPT_DIR/channels.yaml.example" "$CONFIG_DIR/channels.yaml.example" 2>/dev/null || true
+            if [ ! -f "$CONFIG_DIR/channels.yaml" ]; then
+                cp "$SCRIPT_DIR/channels.yaml.example" "$CONFIG_DIR/channels.yaml" 2>/dev/null || true
+            fi
         fi
         
         echo "[6/9] Fixing permissions..."
