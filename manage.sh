@@ -177,26 +177,31 @@ install_repeater() {
     # Welcome screen
     $DIALOG --backtitle "pyMC Repeater Management" --title "Welcome" --msgbox "\nWelcome to pyMC Repeater Setup\n\nThis installer will configure your Linux system as a LoRa mesh network repeater.\n\nPress OK to continue..." 12 70
     
-    # SPI Check
-    CONFIG_FILE=""
-    if [ -f "/boot/firmware/config.txt" ]; then
-        CONFIG_FILE="/boot/firmware/config.txt"
-    elif [ -f "/boot/config.txt" ]; then
-        CONFIG_FILE="/boot/config.txt"
-    fi
-    
-    if [ -n "$CONFIG_FILE" ] && ! grep -q "dtparam=spi=on" "$CONFIG_FILE" 2>/dev/null && ! grep -q "spi_bcm2835" /proc/modules 2>/dev/null; then
-        if ask_yes_no "SPI Not Enabled" "\nSPI interface is required but not enabled!\n\nWould you like to enable it now?\n(This will require a reboot)"; then
-            echo "dtparam=spi=on" >> "$CONFIG_FILE"
-            show_info "SPI Enabled" "\nSPI has been enabled in $CONFIG_FILE\n\nSystem will reboot now. Please run this script again after reboot."
-            reboot
+    # SPI Check - Universal approach that works on all boards
+    if ! ls /dev/spidev* >/dev/null 2>&1; then
+        # SPI devices not found, check if we're on a Raspberry Pi and can enable it
+        CONFIG_FILE=""
+        if [ -f "/boot/firmware/config.txt" ]; then
+            CONFIG_FILE="/boot/firmware/config.txt"
+        elif [ -f "/boot/config.txt" ]; then
+            CONFIG_FILE="/boot/config.txt"
+        fi
+        
+        if [ -n "$CONFIG_FILE" ]; then
+            # Raspberry Pi detected - offer to enable SPI
+            if ask_yes_no "SPI Not Enabled" "\nSPI interface is required but not detected (/dev/spidev* not found)!\n\nWould you like to enable it now?\n(This will require a reboot)"; then
+                echo "dtparam=spi=on" >> "$CONFIG_FILE"
+                show_info "SPI Enabled" "\nSPI has been enabled in $CONFIG_FILE\n\nSystem will reboot now. Please run this script again after reboot."
+                reboot
+            else
+                show_error "SPI is required for LoRa radio operation.\n\nPlease enable SPI manually and run this script again."
+                return
+            fi
         else
-            show_error "SPI is required for LoRa radio operation.\n\nPlease enable SPI manually and run this script again."
+            # Not a Raspberry Pi - provide generic instructions
+            show_error "SPI interface is required but not detected (/dev/spidev* not found).\n\nPlease enable SPI in your system's configuration and ensure the SPI kernel module is loaded.\n\nFor Raspberry Pi: sudo raspi-config -> Interfacing Options -> SPI -> Enable"
             return
         fi
-    elif [ -z "$CONFIG_FILE" ]; then
-        show_error "Could not find config.txt file.\n\nPlease enable SPI manually:\nsudo raspi-config -> Interfacing Options -> SPI -> Enable"
-        return
     fi
     
     # Get script directory for file copying during installation
