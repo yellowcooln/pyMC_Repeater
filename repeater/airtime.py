@@ -53,14 +53,15 @@ class AirtimeManager:
             Airtime in milliseconds
         """
         sf = spreading_factor or self.spreading_factor
-        bw_khz = (bandwidth_hz or self.bandwidth) / 1000
+        bw_hz = (bandwidth_hz or self.bandwidth)
+        bw_khz = bw_hz / 1000
         cr = coding_rate or self.coding_rate
         preamble_len = preamble_len or self.preamble_length
         crc = 1 if crc_enabled else 0
         h = 0 if explicit_header else 1  # H=0 for explicit, H=1 for implicit
         
         # Low data rate optimization: required for SF11/SF12 at 125kHz
-        de = 1 if (sf >= 11 and bandwidth_hz <= 125000) else 0
+        de = 1 if (sf >= 11 and bw_hz <= 125000) else 0
         
         # Symbol time in milliseconds: T_sym = 2^SF / BW_kHz
         t_sym = (2 ** sf) / bw_khz
