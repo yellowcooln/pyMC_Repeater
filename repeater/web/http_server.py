@@ -334,6 +334,7 @@ class HTTPStatsServer:
                         "tools.websocket.handler_cls": PacketWebSocket,
                         "tools.trailing_slash.on": False,
                         "tools.require_auth.on": False,
+                        "tools.gzip.on": False,  
                     }
                     logger.info("WebSocket endpoint configured at /ws/packets")
                 except Exception as e:
