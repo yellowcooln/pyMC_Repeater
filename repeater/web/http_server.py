@@ -299,6 +299,12 @@ class HTTPStatsServer:
                 "/api": {
                     "tools.require_auth.on": True,
                 },
+                # Enable gzip for bulk packet downloads
+                "/api/bulk_packets": {
+                    "tools.gzip.on": True,
+                    "tools.gzip.mime_types": ["application/json"],
+                    "tools.gzip.compress_level": 6,
+                },
                 # Public documentation endpoints (no auth required)
                 "/api/openapi": {
                     "tools.require_auth.on": False,
