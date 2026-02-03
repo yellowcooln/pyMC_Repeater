@@ -216,9 +216,10 @@ class StorageCollector:
         start_timestamp: Optional[float] = None,
         end_timestamp: Optional[float] = None,
         limit: int = 1000,
+        offset: int = 0,
     ) -> list:
         return self.sqlite_handler.get_filtered_packets(
-            packet_type, route, start_timestamp, end_timestamp, limit
+            packet_type, route, start_timestamp, end_timestamp, limit, offset
         )
 
     def get_packet_by_hash(self, packet_hash: str) -> Optional[dict]:
