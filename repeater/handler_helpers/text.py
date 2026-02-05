@@ -404,7 +404,7 @@ class TextHelper:
             "get ", "set ", "reboot", "advert", "clock", "time ",
             "password ", "clear ", "ver", "board", "neighbors", "neighbor.",
             "tempradio ", "setperm ", "region", "sensor ", "gps", "log ",
-            "stats-", "start ota"
+            "stats-", "start ota", "help", "?", "relay", "relay "
         ]
         
         return any(message.startswith(prefix) for prefix in command_prefixes)
