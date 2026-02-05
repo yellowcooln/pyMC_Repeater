@@ -11,8 +11,6 @@ from pymc_core.protocol import Packet
 from pymc_core.protocol.constants import (
     MAX_PATH_SIZE,
     PAYLOAD_TYPE_ADVERT,
-    PAYLOAD_TYPE_GRP_DATA,
-    PAYLOAD_TYPE_GRP_TXT,
     PAYLOAD_TYPE_TXT_MSG,
     PH_ROUTE_MASK,
     PH_TYPE_MASK,
@@ -238,8 +236,9 @@ class RepeaterHandler(BaseHandler):
         src_hash = None
         dst_hash = None
 
-        # Payload types with dest_hash and src_hash as first 2 bytes
-        if payload_type in [0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08, PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_GRP_DATA]:
+        # Payload types with dest_hash and src_hash as first 2 bytes.
+        # NOTE: GRP_TXT/GRP_DATA do NOT carry src/dst hashes in the first two bytes.
+        if payload_type in [0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08]:
             if hasattr(packet, "payload") and packet.payload and len(packet.payload) >= 2:
                 dst_hash = f"{packet.payload[0]:02X}"
                 src_hash = f"{packet.payload[1]:02X}"
@@ -662,8 +661,7 @@ class RepeaterHandler(BaseHandler):
         payload = packet.payload or b""
 
         # Packet types where payload starts with dest_hash, src_hash.
-        # Include text/group-text so relay mode can whitelist chat traffic.
-        if payload_type in (0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08, PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_GRP_DATA) and len(payload) >= 2:
+        if payload_type in (0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08) and len(payload) >= 2:
             dst_hash = payload[0]
             src_hash = payload[1]
             if src_hash in companion_hashes or dst_hash in companion_hashes:
@@ -676,7 +674,9 @@ class RepeaterHandler(BaseHandler):
                 return True, ""
             return False, "Relay whitelist: advert src not companion"
 
-        # For other packet payload types, do not enforce to avoid blocking control flows.
+        # For other payload types (e.g. GRP_TXT/GRP_DATA), source identity is not
+        # available in cleartext packet bytes, so strict companion gating is impossible.
+        # Allow these packets and keep relay behavior deterministic for chat traffic.
         return True, ""
 
     def process_packet(self, packet: Packet, snr: float = 0.0) -> Optional[Tuple[Packet, float]]:
