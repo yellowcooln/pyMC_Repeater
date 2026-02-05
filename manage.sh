@@ -8,6 +8,7 @@ CONFIG_DIR="/etc/pymc_repeater"
 LOG_DIR="/var/log/pymc_repeater"
 SERVICE_USER="repeater"
 SERVICE_NAME="pymc-repeater"
+RUN_IN_TERMINAL_MODE=0
 
 # Check if we're running in an interactive terminal
 if [ ! -t 0 ] || [ -z "$TERM" ]; then
@@ -53,6 +54,31 @@ ask_yes_no() {
 # Function to show progress
 show_progress() {
     echo "$2" | $DIALOG --backtitle "pyMC Repeater Management" --title "$1" --gauge "$3" 8 70 0
+}
+
+# Terminal-only UI helpers for direct CLI actions
+ui_info() {
+    if [ "$RUN_IN_TERMINAL_MODE" -eq 1 ]; then
+        echo "=== $1 ==="
+        printf "%b\n" "$2"
+    else
+        show_info "$1" "$2"
+    fi
+}
+
+ui_error() {
+    if [ "$RUN_IN_TERMINAL_MODE" -eq 1 ]; then
+        echo "ERROR: $1"
+    else
+        show_error "$1"
+    fi
+}
+
+ui_confirm() {
+    if [ "$RUN_IN_TERMINAL_MODE" -eq 1 ]; then
+        return 0
+    fi
+    ask_yes_no "$1" "$2"
 }
 
 # Function to check if service exists
@@ -455,16 +481,16 @@ reset_repeater() {
 # Upgrade function
 upgrade_repeater() {
     if [ "$EUID" -ne 0 ]; then
-        show_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
+        ui_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
         return
     fi
     
     local current_version=$(get_version)
     
-    if ask_yes_no "Confirm Upgrade" "Current version: $current_version\n\nThis will upgrade pyMC Repeater while preserving your configuration.\n\nContinue?"; then
+    if ui_confirm "Confirm Upgrade" "Current version: $current_version\n\nThis will upgrade pyMC Repeater while preserving your configuration.\n\nContinue?"; then
         
         # Show info that upgrade is starting
-        show_info "Upgrading" "Starting upgrade process...\n\nThis may take a few minutes.\nProgress will be shown in the terminal."
+        ui_info "Upgrading" "Starting upgrade process...\n\nThis may take a few minutes.\nProgress will be shown in the terminal."
         
         echo "=== Upgrade Progress ==="
         echo "[1/9] Stopping service..."
@@ -623,10 +649,10 @@ EOF
         
         if is_running; then
             echo "    ✓ Service is running"
-            show_info "Upgrade Complete" "Upgrade completed successfully!\n\nVersion: $current_version → $new_version\n\n✓ Service is running\n✓ Configuration preserved"
+            ui_info "Upgrade Complete" "Upgrade completed successfully!\n\nVersion: $current_version → $new_version\n\n✓ Service is running\n✓ Configuration preserved"
         else
             echo "    ✗ Service failed to start"
-            show_error "Upgrade completed but service failed to start!\n\nVersion updated: $current_version → $new_version\n\nCheck logs from the main menu for details."
+            ui_error "Upgrade completed but service failed to start!\n\nVersion updated: $current_version → $new_version\n\nCheck logs from the main menu for details."
         fi
         echo "=== Upgrade Complete ==="
     fi
@@ -717,12 +743,12 @@ manage_service() {
     local action=$1
     
     if [ "$EUID" -ne 0 ]; then
-        show_error "Service management requires root privileges.\n\nPlease run: sudo $0"
+        ui_error "Service management requires root privileges.\n\nPlease run: sudo $0"
         return
     fi
     
     if ! service_exists; then
-        show_error "Service is not installed."
+        ui_error "Service is not installed."
         return
     fi
     
@@ -730,21 +756,21 @@ manage_service() {
         "start")
             systemctl start "$SERVICE_NAME"
             if is_running; then
-                show_info "Service Started" "\n✓ pyMC Repeater service has been started successfully."
+                ui_info "Service Started" "\n✓ pyMC Repeater service has been started successfully."
             else
-                show_error "Failed to start service!\n\nCheck logs for details."
+                ui_error "Failed to start service!\n\nCheck logs for details."
             fi
             ;;
         "stop")
             systemctl stop "$SERVICE_NAME"
-            show_info "Service Stopped" "\n✓ pyMC Repeater service has been stopped."
+            ui_info "Service Stopped" "\n✓ pyMC Repeater service has been stopped."
             ;;
         "restart")
             systemctl restart "$SERVICE_NAME"
             if is_running; then
-                show_info "Service Restarted" "\n✓ pyMC Repeater service has been restarted successfully."
+                ui_info "Service Restarted" "\n✓ pyMC Repeater service has been restarted successfully."
             else
-                show_error "Failed to restart service!\n\nCheck logs for details."
+                ui_error "Failed to restart service!\n\nCheck logs for details."
             fi
             ;;
     esac
@@ -902,6 +928,7 @@ case "$1" in
         exit 0
         ;;
     "upgrade")
+        RUN_IN_TERMINAL_MODE=1
         upgrade_repeater
         exit 0
         ;;
@@ -914,6 +941,7 @@ case "$1" in
         exit 0
         ;;
     "start"|"stop"|"restart")
+        RUN_IN_TERMINAL_MODE=1
         manage_service "$1"
         exit 0
         ;;
