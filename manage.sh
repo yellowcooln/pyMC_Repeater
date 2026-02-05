@@ -588,18 +588,26 @@ EOF
         echo "Note: Using optimized binary wheels and cached packages for faster installation"
         echo ""
         
-        # Upgrade packages (uses cache for unchanged dependencies - much faster)
-        if python3 -m pip install --break-system-packages --upgrade --upgrade-strategy eager .; then
+        # Upgrade package without forcing eager dependency churn.
+        # Eager upgrades can try to replace distro-managed packages (for example PyYAML),
+        # which often fail because apt-installed packages do not have pip RECORD metadata.
+        if python3 -m pip install --break-system-packages --upgrade --upgrade-strategy only-if-needed .; then
             echo ""
             echo "✓ Package and dependencies updated successfully!"
+            package_upgrade_ok=1
         else
             echo ""
-            echo "⚠ Package update failed, but continuing..."
+            echo "⚠ Package update failed (see pip errors above)."
+            package_upgrade_ok=0
         fi
         
-
-        echo ""
-        echo "✓ All packages including pymc_core reinstalled successfully"
+        if [ "${package_upgrade_ok:-0}" -eq 1 ]; then
+            echo ""
+            echo "✓ Python packages updated successfully"
+        else
+            echo ""
+            echo "⚠ Continuing upgrade with existing Python packages"
+        fi
 
         
         echo "[8/9] Starting service..."
