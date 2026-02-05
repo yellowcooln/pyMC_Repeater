@@ -1265,6 +1265,7 @@ class APIEndpoints:
             "max_flood_hops": 3,         # Max flood hops (0-64)
             "flood_advert_interval_hours": 10,  # Flood advert interval (0 or 3-48)
             "advert_interval_minutes": 120      # Local advert interval (0 or 1-10080)
+            "relay_mode": "compat"          # Relay policy: compat or strict
         }
         
         Note: Radio hardware changes (frequency, bandwidth, SF, CR) require restart to apply.
@@ -1406,6 +1407,14 @@ class APIEndpoints:
                     return self._error("Advert interval must be 0 (off) or 1-10080 minutes")
                 self.config["repeater"]["advert_interval_minutes"] = mins
                 applied.append(f"advert.interval={mins}m")
+
+            # Update relay policy mode
+            if "relay_mode" in data:
+                relay_mode = str(data["relay_mode"]).strip().lower()
+                if relay_mode not in ("compat", "strict"):
+                    return self._error("Relay mode must be 'compat' or 'strict'")
+                self.config["repeater"]["relay_mode"] = relay_mode
+                applied.append(f"relay.mode={relay_mode}")
             
             if not applied:
                 return self._error("No valid settings provided")

@@ -242,6 +242,10 @@ class MeshCLI:
         elif param == "mode":
             mode = self.repeater_config.get("mode", "forward")
             return f"> {mode}"
+
+        elif param == "relay.mode":
+            relay_mode = self.repeater_config.get("relay_mode", "compat")
+            return f"> {relay_mode}"
         
         elif param == "lat":
             lat = self.repeater_config.get('latitude', 0.0)
@@ -341,6 +345,8 @@ class MeshCLI:
         if len(parts) < 2:
             if param.strip() == "mode":
                 return "Modes: forward | monitor | relay"
+            if param.strip() == "relay.mode":
+                return "Relay modes: compat | strict"
             return "Error: Missing value"
         
         key, value = parts[0], parts[1]
@@ -373,6 +379,15 @@ class MeshCLI:
                 self.config_manager.save_to_file()
                 self.config_manager.live_update_daemon(["repeater"])
                 return f"OK - mode set to {mode}"
+
+            elif key == "relay.mode":
+                relay_mode = value.lower().strip()
+                if relay_mode not in ("compat", "strict"):
+                    return "Error: relay.mode must be compat or strict"
+                self.repeater_config["relay_mode"] = relay_mode
+                self.config_manager.save_to_file()
+                self.config_manager.live_update_daemon(["repeater"])
+                return f"OK - relay.mode set to {relay_mode}"
             
             elif key == "lat":
                 self.repeater_config['latitude'] = float(value)
@@ -545,6 +560,7 @@ class MeshCLI:
             "  reboot | advert | clock | ver",
             "  get <param> | set <param> <value>",
             "  set mode <forward|monitor|relay>",
+            "  set relay.mode <compat|strict>",
             "  neighbors | neighbor.remove <pubkey>",
             "  relay list | relay add <hex_pubkey> | relay del <hex_pubkey>",
         ])
