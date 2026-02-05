@@ -655,7 +655,7 @@ class RepeaterHandler(BaseHandler):
         """
         companion_hashes = self._get_relay_companion_hashes()
         if not companion_hashes:
-            return True, ""
+            return True, "Relay whitelist inactive: no companions configured"
 
         payload_type = packet.get_payload_type() if hasattr(packet, "get_payload_type") else ((packet.header & 0x3C) >> 2)
         payload = packet.payload or b""
@@ -665,19 +665,19 @@ class RepeaterHandler(BaseHandler):
             dst_hash = payload[0]
             src_hash = payload[1]
             if src_hash in companion_hashes or dst_hash in companion_hashes:
-                return True, ""
+                return True, "Relay whitelist allow: src/dst companion match"
             return False, "Relay whitelist: src/dst not companion"
 
         # ADVERT packets store source hash in first byte
         if payload_type == PAYLOAD_TYPE_ADVERT and len(payload) >= 1:
             if payload[0] in companion_hashes:
-                return True, ""
+                return True, "Relay whitelist allow: advert src companion match"
             return False, "Relay whitelist: advert src not companion"
 
         # For other payload types (e.g. GRP_TXT/GRP_DATA), source identity is not
         # available in cleartext packet bytes, so strict companion gating is impossible.
         # Allow these packets and keep relay behavior deterministic for chat traffic.
-        return True, ""
+        return True, "Relay whitelist bypass: payload type has no clear src/dst hash"
 
     def process_packet(self, packet: Packet, snr: float = 0.0) -> Optional[Tuple[Packet, float]]:
         mode = self.config.get("repeater", {}).get("mode", "forward")
@@ -686,6 +686,8 @@ class RepeaterHandler(BaseHandler):
             if not allowed:
                 packet.drop_reason = reason
                 return None
+            if reason:
+                logger.debug(reason)
 
         route_type = packet.header & PH_ROUTE_MASK
 
