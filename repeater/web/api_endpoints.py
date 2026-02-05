@@ -569,8 +569,19 @@ class APIEndpoints:
             if "repeater" not in self.config:
                 self.config["repeater"] = {}
             self.config["repeater"]["mode"] = new_mode
+            result = self.config_manager.update_and_save(
+                updates={},
+                live_update=True,
+                live_update_sections=["repeater"],
+            )
             logger.info(f"Mode changed to: {new_mode}")
-            return {"success": True, "mode": new_mode}
+            return self._success(
+                {
+                    "mode": new_mode,
+                    "persisted": result.get("saved", False),
+                    "live_update": result.get("live_updated", False),
+                }
+            )
         except cherrypy.HTTPError:
             # Re-raise HTTP errors (like 405 Method Not Allowed) without logging
             raise
