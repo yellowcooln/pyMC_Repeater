@@ -1,31 +1,45 @@
-# Relay Companion Whitelist Feature
+# Relay Mode Feature (Forward / Monitor / Relay)
 
-This file tracks the relay companion whitelist feature only.
+This file tracks relay-mode behavior and commands only.
 
-## What Exists
+## Current Modes
 
-- Repeater mode supports `forward`, `monitor`, and `relay`.
-- Relay whitelist CLI commands:
+- Repeater supports 3 modes:
+  - `forward`
+  - `monitor`
+  - `relay`
+- `relay=false` is not used as a substitute for monitor mode.
+
+## Relay Companion Whitelist
+
+- Relay companion commands:
+  - `relay` (shows relay command help/usage)
   - `relay list`
   - `relay add <64-hex-pubkey>`
   - `relay del <64-hex-pubkey>`
-- CLI help (`help` or `?`) includes relay commands.
-- Relay companion API endpoint:
+- Relay companion API:
   - `GET /api/relay_companions`
-  - `POST /api/relay_companions` with `{"public_key":"<64-hex>"}` 
+  - `POST /api/relay_companions` with `{"public_key":"<64-hex>"}`
   - `DELETE /api/relay_companions?public_key=<64-hex>`
-- Relay companions are stored in config at:
-  - `repeater.relay_companions` (array of normalized lowercase 64-hex pubkeys)
+- Stored in config:
+  - `repeater.relay_companions` (normalized lowercase 64-hex pubkeys)
 
-## Relay Behavior
+## Relay Policy (Compat vs Strict)
 
-- In `relay` mode, forwarding is whitelist-gated:
-  - Direct/text/group/control/path-style payloads are forwarded only when src or dst hash matches a companion hash.
-  - Advert packets are forwarded only when advert source hash matches a companion hash.
-- If no companions are configured, `relay` mode behaves like normal forwarding mode (no lockout).
+- Relay policy setting:
+  - `repeater.relay_mode` with values:
+    - `compat` (default)
+    - `strict`
+- Meaning:
+  - `compat`: whitelist by companion hashes where possible; allow payload types that cannot be identity-verified at this layer.
+  - `strict`: whitelist by companion hashes where possible; drop payload types that cannot be identity-verified.
+- API support:
+  - `POST /api/update_radio_config` with `{"relay_mode":"compat|strict"}`
+- CLI support:
+  - `get relay.mode`
+  - `set relay.mode <compat|strict>`
 
 ## UI Notes
 
-- Mode cycle supports all 3 modes.
-- Relay mode status text shows as `Relay Mode 🟣`.
-
+- Web UI supports all 3 repeater modes.
+- Repeater Settings includes a Relay Policy selector (`Compat` / `Strict`).
