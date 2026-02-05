@@ -238,6 +238,10 @@ class MeshCLI:
         elif param == "repeat":
             disabled = self.repeater_config.get('disable_forward', False)
             return f"> {'off' if disabled else 'on'}"
+
+        elif param == "mode":
+            mode = self.repeater_config.get("mode", "forward")
+            return f"> {mode}"
         
         elif param == "lat":
             lat = self.repeater_config.get('latitude', 0.0)
@@ -335,6 +339,8 @@ class MeshCLI:
         """Handle set commands."""
         parts = param.split(None, 1)
         if len(parts) < 2:
+            if param.strip() == "mode":
+                return "Modes: forward | monitor | relay"
             return "Error: Missing value"
         
         key, value = parts[0], parts[1]
@@ -358,6 +364,15 @@ class MeshCLI:
                 self.config_manager.save_to_file()
                 self.config_manager.live_update_daemon(['repeater'])
                 return f"OK - repeat is now {'OFF' if disabled else 'ON'}"
+
+            elif key == "mode":
+                mode = value.lower().strip()
+                if mode not in ("forward", "monitor", "relay"):
+                    return "Error: mode must be forward, monitor, or relay"
+                self.repeater_config["mode"] = mode
+                self.config_manager.save_to_file()
+                self.config_manager.live_update_daemon(["repeater"])
+                return f"OK - mode set to {mode}"
             
             elif key == "lat":
                 self.repeater_config['latitude'] = float(value)
@@ -529,6 +544,7 @@ class MeshCLI:
             "Commands:",
             "  reboot | advert | clock | ver",
             "  get <param> | set <param> <value>",
+            "  set mode <forward|monitor|relay>",
             "  neighbors | neighbor.remove <pubkey>",
             "  relay list | relay add <hex_pubkey> | relay del <hex_pubkey>",
         ])
@@ -566,7 +582,7 @@ class MeshCLI:
         """
         parts = command.split()
         if len(parts) < 2:
-            return "Err - bad params (use: relay list|add|del <pubkey>)"
+            parts.append("list")
 
         subcommand = parts[1].lower()
         companions = self._get_relay_companions()

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, Callable
 import yaml
 from pathlib import Path
 import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,10 @@ class MeshCLI:
             return self._cmd_setperm(command)
         elif command == "get acl":
             return "Error: Use 'get acl' via serial console only"
+        elif command == "help" or command == "?":
+            return self._cmd_help()
+        elif command == "relay" or command.startswith("relay "):
+            return self._cmd_relay(command)
         
         # Region commands (repeaters only)
         elif command.startswith("region"):
@@ -242,6 +247,10 @@ class MeshCLI:
         elif param == "repeat":
             disabled = self.repeater_config.get('disable_forward', False)
             return f"> {'off' if disabled else 'on'}"
+
+        elif param == "mode":
+            mode = self.repeater_config.get("mode", "forward")
+            return f"> {mode}"
         
         elif param == "lat":
             lat = self.repeater_config.get('latitude', 0.0)
@@ -332,6 +341,8 @@ class MeshCLI:
         """Handle set commands."""
         parts = param.split(None, 1)
         if len(parts) < 2:
+            if param.strip() == "mode":
+                return "Modes: forward | monitor | relay"
             return "Error: Missing value"
         
         key, value = parts[0], parts[1]
@@ -352,6 +363,14 @@ class MeshCLI:
                 self.repeater_config['disable_forward'] = disabled
                 self.save_config()
                 return f"OK - repeat is now {'OFF' if disabled else 'ON'}"
+
+            elif key == "mode":
+                mode = value.lower().strip()
+                if mode not in ("forward", "monitor", "relay"):
+                    return "Error: mode must be forward, monitor, or relay"
+                self.repeater_config["mode"] = mode
+                self.save_config()
+                return f"OK - mode set to {mode}"
             
             elif key == "lat":
                 self.repeater_config['latitude'] = float(value)
@@ -500,6 +519,94 @@ class MeshCLI:
         # TODO: Apply permissions via ACL
         logger.info(f"setperm command: {pubkey_hex} -> {permissions}")
         return "Error: Not yet implemented - use config file"
+
+    def _cmd_help(self) -> str:
+        """Return supported CLI commands."""
+        return "\n".join([
+            "Commands:",
+            "  reboot | advert | clock | ver",
+            "  get <param> | set <param> <value>",
+            "  set mode <forward|monitor|relay>",
+            "  neighbors | neighbor.remove <pubkey>",
+            "  relay list | relay add <hex_pubkey> | relay del <hex_pubkey>",
+        ])
+
+    def _get_relay_companions(self) -> list[str]:
+        """Return normalized relay companion pubkeys from config."""
+        repeater_cfg = self.config.setdefault("repeater", {})
+        companions = repeater_cfg.get("relay_companions", [])
+        if not isinstance(companions, list):
+            companions = []
+            repeater_cfg["relay_companions"] = companions
+        return companions
+
+    @staticmethod
+    def _normalize_pubkey(pubkey: str) -> Optional[str]:
+        """Validate and normalize pubkey hex."""
+        if not pubkey:
+            return None
+        key = pubkey.strip().lower()
+        if key.startswith("0x"):
+            key = key[2:]
+        if len(key) != 64:
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", key):
+            return None
+        return key
+
+    def _cmd_relay(self, command: str) -> str:
+        """
+        Manage relay companion whitelist.
+        Commands:
+          relay list
+          relay add <hex_pubkey>
+          relay del <hex_pubkey>
+        """
+        parts = command.split()
+        if len(parts) < 2:
+            parts.append("list")
+
+        subcommand = parts[1].lower()
+        companions = self._get_relay_companions()
+
+        if subcommand == "list":
+            if not companions:
+                return "Relay companions: 0"
+            lines = [f"Relay companions: {len(companions)}"]
+            lines.extend(companions)
+            return "\n".join(lines)
+
+        if subcommand not in ("add", "del", "remove"):
+            return "Err - unknown subcommand"
+
+        if len(parts) < 3:
+            return "Err - missing pubkey"
+
+        normalized = self._normalize_pubkey(parts[2])
+        if not normalized:
+            return "Err - invalid pubkey (expected 64 hex chars)"
+
+        if subcommand == "add":
+            if normalized in companions:
+                return "OK - companion already exists"
+            companions.append(normalized)
+            try:
+                self.save_config()
+                return f"OK - companion added ({normalized[:8]})"
+            except Exception as e:
+                logger.error(f"Failed to save relay companion: {e}")
+                return "Error: failed to save relay companion"
+
+        # del/remove
+        if normalized not in companions:
+            return "Err - companion not found"
+        companions.remove(normalized)
+        try:
+            self.save_config()
+            return f"OK - companion removed ({normalized[:8]})"
+        except Exception as e:
+            logger.error(f"Failed to save relay companion removal: {e}")
+            return "Error: failed to save relay companion"
     
     # ==================== Region Commands ====================
     
