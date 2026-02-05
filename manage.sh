@@ -536,6 +536,7 @@ upgrade_repeater() {
         fi
         
         echo "[6/9] Fixing permissions..."
+        mkdir -p "$LOG_DIR" /var/lib/pymc_repeater "$CONFIG_DIR" "$INSTALL_DIR"
         chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" /var/lib/pymc_repeater 2>/dev/null || true
         chmod 750 "$CONFIG_DIR" "$LOG_DIR" 2>/dev/null || true
         chmod 755 /var/lib/pymc_repeater 2>/dev/null || true
