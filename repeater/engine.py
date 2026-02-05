@@ -131,7 +131,7 @@ class RepeaterHandler(BaseHandler):
 
         original_path = list(packet.path) if packet.path else []
 
-        # Process for forwarding (skip if in monitor mode or if this is a local transmission)
+        # Process for forwarding (skip in monitor mode or local injection path)
         result = None if (monitor_mode or local_transmission) else self.process_packet(processed_packet, snr)
         forwarded_path = None
         

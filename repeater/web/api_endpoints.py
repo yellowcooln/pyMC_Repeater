@@ -39,7 +39,7 @@ logger = logging.getLogger("HTTPServer")
 
 # Repeater Control
 # POST   /api/send_advert - Send repeater advertisement
-# POST   /api/set_mode {"mode": "forward|monitor"} - Set repeater mode
+# POST   /api/set_mode {"mode": "forward|monitor|relay"} - Set repeater mode
 # POST   /api/set_duty_cycle {"enabled": true|false} - Enable/disable duty cycle
 # POST   /api/update_duty_cycle_config {"enabled": true, "on_time": 300, "off_time": 60} - Update duty cycle config
 # POST   /api/update_radio_config - Update radio configuration
@@ -546,8 +546,8 @@ class APIEndpoints:
             self._require_post()
             data = cherrypy.request.json
             new_mode = data.get("mode", "forward")
-            if new_mode not in ["forward", "monitor"]:
-                return self._error("Invalid mode. Must be 'forward' or 'monitor'")
+            if new_mode not in ["forward", "monitor", "relay"]:
+                return self._error("Invalid mode. Must be 'forward', 'monitor', or 'relay'")
             if "repeater" not in self.config:
                 self.config["repeater"] = {}
             self.config["repeater"]["mode"] = new_mode
@@ -1267,7 +1267,7 @@ class APIEndpoints:
                     return self._error("Node name too long (max 31 bytes in UTF-8)")
                 self.config["repeater"]["node_name"] = name
                 applied.append(f"name={name}")
-            
+
             # Update latitude
             if "latitude" in data:
                 lat = float(data["latitude"])
@@ -1291,7 +1291,7 @@ class APIEndpoints:
                     return self._error("Max flood hops must be 0-64")
                 self.config["repeater"]["max_flood_hops"] = hops
                 applied.append(f"flood.max={hops}")
-            
+
             # Update flood advert interval (hours)
             if "flood_advert_interval_hours" in data:
                 hours = int(data["flood_advert_interval_hours"])
