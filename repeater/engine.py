@@ -625,7 +625,63 @@ class RepeaterHandler(BaseHandler):
 
         return delay_s
 
+    def _get_relay_companion_hashes(self) -> set[int]:
+        """Build a set of first-byte hashes from configured relay companion pubkeys."""
+        companions = self.config.get("repeater", {}).get("relay_companions", [])
+        if not isinstance(companions, list):
+            return set()
+
+        hashes: set[int] = set()
+        for pubkey in companions:
+            if not isinstance(pubkey, str):
+                continue
+            key = pubkey.strip().lower()
+            if key.startswith("0x"):
+                key = key[2:]
+            if len(key) < 2:
+                continue
+            try:
+                hashes.add(int(key[:2], 16))
+            except ValueError:
+                continue
+        return hashes
+
+    def _relay_mode_allows_packet(self, packet: Packet) -> tuple[bool, str]:
+        """
+        Relay whitelist gate.
+        If no companions are configured, relay mode behaves like forward mode.
+        """
+        companion_hashes = self._get_relay_companion_hashes()
+        if not companion_hashes:
+            return True, ""
+
+        payload_type = packet.get_payload_type() if hasattr(packet, "get_payload_type") else ((packet.header & 0x3C) >> 2)
+        payload = packet.payload or b""
+
+        # Common packet types where payload starts with dest_hash, src_hash
+        if payload_type in (0x00, 0x01, 0x02, 0x08) and len(payload) >= 2:
+            dst_hash = payload[0]
+            src_hash = payload[1]
+            if src_hash in companion_hashes or dst_hash in companion_hashes:
+                return True, ""
+            return False, "Relay whitelist: src/dst not companion"
+
+        # ADVERT packets store source hash in first byte
+        if payload_type == PAYLOAD_TYPE_ADVERT and len(payload) >= 1:
+            if payload[0] in companion_hashes:
+                return True, ""
+            return False, "Relay whitelist: advert src not companion"
+
+        # For other packet payload types, do not enforce to avoid blocking control flows.
+        return True, ""
+
     def process_packet(self, packet: Packet, snr: float = 0.0) -> Optional[Tuple[Packet, float]]:
+        mode = self.config.get("repeater", {}).get("mode", "forward")
+        if mode == "relay":
+            allowed, reason = self._relay_mode_allows_packet(packet)
+            if not allowed:
+                packet.drop_reason = reason
+                return None
 
         route_type = packet.header & PH_ROUTE_MASK
 
@@ -718,6 +774,7 @@ class RepeaterHandler(BaseHandler):
                 "node_name": repeater_config.get("node_name", "Unknown"),
                 "repeater": {
                     "mode": repeater_config.get("mode", "forward"),
+                    "relay_companions": repeater_config.get("relay_companions", []),
                     "use_score_for_tx": repeater_config.get("use_score_for_tx", False),
                     "score_threshold": repeater_config.get("score_threshold", 0.3),
                     "send_advert_interval_hours": repeater_config.get("send_advert_interval_hours", 10),

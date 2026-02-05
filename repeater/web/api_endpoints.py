@@ -40,6 +40,9 @@ logger = logging.getLogger("HTTPServer")
 # Repeater Control
 # POST   /api/send_advert - Send repeater advertisement
 # POST   /api/set_mode {"mode": "forward|monitor|relay"} - Set repeater mode
+# GET    /api/relay_companions - List relay companion pubkeys
+# POST   /api/relay_companions {"public_key": "..."} - Add relay companion pubkey
+# DELETE /api/relay_companions?public_key=... - Remove relay companion pubkey
 # POST   /api/set_duty_cycle {"enabled": true|false} - Enable/disable duty cycle
 # POST   /api/update_duty_cycle_config {"enabled": true, "on_time": 300, "off_time": 60} - Update duty cycle config
 # POST   /api/update_radio_config - Update radio configuration
@@ -205,6 +208,21 @@ class APIEndpoints:
     def _get_time_range(self, hours):
         end_time = int(time.time())
         return end_time - (hours * 3600), end_time
+
+    @staticmethod
+    def _normalize_pubkey_hex(public_key: str) -> Optional[str]:
+        if not isinstance(public_key, str):
+            return None
+        key = public_key.strip().lower()
+        if key.startswith("0x"):
+            key = key[2:]
+        if len(key) != 64:
+            return None
+        try:
+            int(key, 16)
+        except ValueError:
+            return None
+        return key
 
     def _process_counter_data(self, data_points, timestamps_ms):
         rates = []
@@ -558,6 +576,72 @@ class APIEndpoints:
             raise
         except Exception as e:
             logger.error(f"Error setting mode: {e}", exc_info=True)
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def relay_companions(self):
+        self._set_cors_headers()
+
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+
+        try:
+            repeater_cfg = self.config.setdefault("repeater", {})
+            companions = repeater_cfg.get("relay_companions", [])
+            if not isinstance(companions, list):
+                companions = []
+                repeater_cfg["relay_companions"] = companions
+
+            if cherrypy.request.method == "GET":
+                return self._success({"companions": companions, "count": len(companions)})
+
+            if cherrypy.request.method == "POST":
+                body = cherrypy.request.body.read()
+                data = json.loads(body.decode("utf-8")) if body else {}
+                normalized = self._normalize_pubkey_hex(data.get("public_key", ""))
+                if not normalized:
+                    return self._error("Invalid public_key (must be 64 hex chars)")
+                if normalized in companions:
+                    return self._success({"companions": companions, "count": len(companions)}, message="Already present")
+                companions.append(normalized)
+                save_result = self.config_manager.update_and_save(
+                    updates={},
+                    live_update=True,
+                    live_update_sections=["repeater"],
+                )
+                return self._success(
+                    {"companions": companions, "count": len(companions)},
+                    message="Companion added",
+                    persisted=save_result.get("saved", False),
+                    live_update=save_result.get("live_updated", False),
+                )
+
+            if cherrypy.request.method == "DELETE":
+                public_key = cherrypy.request.params.get("public_key")
+                normalized = self._normalize_pubkey_hex(public_key or "")
+                if not normalized:
+                    return self._error("Invalid public_key (must be 64 hex chars)")
+                if normalized not in companions:
+                    return self._error("Companion not found")
+                companions.remove(normalized)
+                save_result = self.config_manager.update_and_save(
+                    updates={},
+                    live_update=True,
+                    live_update_sections=["repeater"],
+                )
+                return self._success(
+                    {"companions": companions, "count": len(companions)},
+                    message="Companion removed",
+                    persisted=save_result.get("saved", False),
+                    live_update=save_result.get("live_updated", False),
+                )
+
+            cherrypy.response.status = 405
+            return self._error("Method not allowed")
+
+        except Exception as e:
+            logger.error(f"Error managing relay companions: {e}", exc_info=True)
             return self._error(e)
 
     @cherrypy.expose
