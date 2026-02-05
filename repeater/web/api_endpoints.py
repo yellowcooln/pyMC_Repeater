@@ -566,11 +566,13 @@ class APIEndpoints:
             new_mode = data.get("mode", "forward")
             if new_mode not in ["forward", "monitor", "relay"]:
                 return self._error("Invalid mode. Must be 'forward', 'monitor', or 'relay'")
-            if "repeater" not in self.config:
-                self.config["repeater"] = {}
-            self.config["repeater"]["mode"] = new_mode
+            # Always write through ConfigManager's config reference to avoid stale dict instances.
+            config_ref = self.config_manager.config if self.config_manager else self.config
+            if "repeater" not in config_ref:
+                config_ref["repeater"] = {}
+            config_ref["repeater"]["mode"] = new_mode
             result = self.config_manager.update_and_save(
-                updates={},
+                updates={"repeater": {"mode": new_mode}},
                 live_update=True,
                 live_update_sections=["repeater"],
             )
@@ -598,7 +600,9 @@ class APIEndpoints:
             return ""
 
         try:
-            repeater_cfg = self.config.setdefault("repeater", {})
+            # Use ConfigManager-owned config to keep API and saver on the same object.
+            config_ref = self.config_manager.config if self.config_manager else self.config
+            repeater_cfg = config_ref.setdefault("repeater", {})
             companions = repeater_cfg.get("relay_companions", [])
             if not isinstance(companions, list):
                 companions = []
@@ -617,7 +621,7 @@ class APIEndpoints:
                     return self._success({"companions": companions, "count": len(companions)}, message="Already present")
                 companions.append(normalized)
                 save_result = self.config_manager.update_and_save(
-                    updates={},
+                    updates={"repeater": {"relay_companions": companions}},
                     live_update=True,
                     live_update_sections=["repeater"],
                 )
@@ -637,7 +641,7 @@ class APIEndpoints:
                     return self._error("Companion not found")
                 companions.remove(normalized)
                 save_result = self.config_manager.update_and_save(
-                    updates={},
+                    updates={"repeater": {"relay_companions": companions}},
                     live_update=True,
                     live_update_sections=["repeater"],
                 )
