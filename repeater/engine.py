@@ -11,6 +11,9 @@ from pymc_core.protocol import Packet
 from pymc_core.protocol.constants import (
     MAX_PATH_SIZE,
     PAYLOAD_TYPE_ADVERT,
+    PAYLOAD_TYPE_GRP_DATA,
+    PAYLOAD_TYPE_GRP_TXT,
+    PAYLOAD_TYPE_TXT_MSG,
     PH_ROUTE_MASK,
     PH_TYPE_MASK,
     PH_TYPE_SHIFT,
@@ -236,7 +239,7 @@ class RepeaterHandler(BaseHandler):
         dst_hash = None
 
         # Payload types with dest_hash and src_hash as first 2 bytes
-        if payload_type in [0x00, 0x01, 0x02, 0x08]:
+        if payload_type in [0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08, PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_GRP_DATA]:
             if hasattr(packet, "payload") and packet.payload and len(packet.payload) >= 2:
                 dst_hash = f"{packet.payload[0]:02X}"
                 src_hash = f"{packet.payload[1]:02X}"
@@ -658,8 +661,9 @@ class RepeaterHandler(BaseHandler):
         payload_type = packet.get_payload_type() if hasattr(packet, "get_payload_type") else ((packet.header & 0x3C) >> 2)
         payload = packet.payload or b""
 
-        # Common packet types where payload starts with dest_hash, src_hash
-        if payload_type in (0x00, 0x01, 0x02, 0x08) and len(payload) >= 2:
+        # Packet types where payload starts with dest_hash, src_hash.
+        # Include text/group-text so relay mode can whitelist chat traffic.
+        if payload_type in (0x00, 0x01, PAYLOAD_TYPE_TXT_MSG, 0x08, PAYLOAD_TYPE_GRP_TXT, PAYLOAD_TYPE_GRP_DATA) and len(payload) >= 2:
             dst_hash = payload[0]
             src_hash = payload[1]
             if src_hash in companion_hashes or dst_hash in companion_hashes:
