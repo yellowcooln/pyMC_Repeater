@@ -842,6 +842,45 @@ class APIEndpoints:
             return self._error(e)
 
     @cherrypy.expose
+    @cherrypy.tools.gzip(compress_level=6)
+    @cherrypy.tools.json_out()
+    def bulk_packets(self, limit=1000, offset=0, start_timestamp=None, end_timestamp=None):
+        """
+        Optimized bulk packet retrieval with gzip compression and DB-level pagination.
+        """
+        try:
+            # Enforce reasonable limits
+            limit = min(int(limit), 10000)
+            offset = max(int(offset), 0)
+            
+            # Get packets from storage with TRUE DB-level pagination
+            # Uses SQL "LIMIT ? OFFSET ?" - no Python slicing needed!
+            storage = self._get_storage()
+            packets = storage.get_filtered_packets(
+                packet_type=None,
+                route=None,
+                start_timestamp=float(start_timestamp) if start_timestamp else None,
+                end_timestamp=float(end_timestamp) if end_timestamp else None,
+                limit=limit,
+                offset=offset
+            )
+            
+            response = {
+                "success": True,
+                "data": packets,
+                "count": len(packets),
+                "offset": offset,
+                "limit": limit,
+                "compressed": True
+            }
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error getting bulk packets: {e}")
+            return self._error(e)
+
+    @cherrypy.expose
     @cherrypy.tools.json_out()
     def filtered_packets(self, start_timestamp=None, end_timestamp=None, limit=1000, type=None, route=None):
         # Handle OPTIONS request for CORS preflight

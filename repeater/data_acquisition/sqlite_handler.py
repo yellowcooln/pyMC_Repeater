@@ -560,7 +560,8 @@ class SQLiteHandler:
                            route: Optional[int] = None,
                            start_timestamp: Optional[float] = None,
                            end_timestamp: Optional[float] = None,
-                           limit: int = 1000) -> list:
+                           limit: int = 1000,
+                           offset: int = 0) -> list:
         try:
             with sqlite3.connect(self.sqlite_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -599,8 +600,9 @@ class SQLiteHandler:
                 else:
                     query = base_query
                 
-                query += " ORDER BY timestamp DESC LIMIT ?"
+                query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
                 params.append(limit)
+                params.append(offset)
                 
                 packets = conn.execute(query, params).fetchall()
                 

@@ -105,6 +105,7 @@ show_main_menu() {
     CHOICE=$($DIALOG --backtitle "pyMC Repeater Management" --title "pyMC Repeater Management" --menu "\nCurrent Status: $status\n\nChoose an action:" 18 70 9 \
         "install" "Install pyMC Repeater" \
         "upgrade" "Upgrade existing installation" \
+        "reset" "reset existing installation to defaults" \
         "uninstall" "Remove pyMC Repeater completely" \
         "config" "Configure radio settings" \
         "start" "Start the service" \
@@ -125,6 +126,13 @@ show_main_menu() {
         "upgrade")
             if is_installed; then
                 upgrade_repeater
+            else
+                show_error "pyMC Repeater is not installed!\n\nUse 'install' first."
+            fi
+            ;;
+        "reset")
+            if is_installed; then
+                reset_repeater
             else
                 show_error "pyMC Repeater is not installed!\n\nUse 'install' first."
             fi
@@ -174,26 +182,31 @@ install_repeater() {
     # Welcome screen
     $DIALOG --backtitle "pyMC Repeater Management" --title "Welcome" --msgbox "\nWelcome to pyMC Repeater Setup\n\nThis installer will configure your Linux system as a LoRa mesh network repeater.\n\nPress OK to continue..." 12 70
     
-    # SPI Check
-    CONFIG_FILE=""
-    if [ -f "/boot/firmware/config.txt" ]; then
-        CONFIG_FILE="/boot/firmware/config.txt"
-    elif [ -f "/boot/config.txt" ]; then
-        CONFIG_FILE="/boot/config.txt"
-    fi
-    
-    if [ -n "$CONFIG_FILE" ] && ! grep -q "dtparam=spi=on" "$CONFIG_FILE" 2>/dev/null && ! grep -q "spi_bcm2835" /proc/modules 2>/dev/null; then
-        if ask_yes_no "SPI Not Enabled" "\nSPI interface is required but not enabled!\n\nWould you like to enable it now?\n(This will require a reboot)"; then
-            echo "dtparam=spi=on" >> "$CONFIG_FILE"
-            show_info "SPI Enabled" "\nSPI has been enabled in $CONFIG_FILE\n\nSystem will reboot now. Please run this script again after reboot."
-            reboot
+    # SPI Check - Universal approach that works on all boards
+    if ! ls /dev/spidev* >/dev/null 2>&1; then
+        # SPI devices not found, check if we're on a Raspberry Pi and can enable it
+        CONFIG_FILE=""
+        if [ -f "/boot/firmware/config.txt" ]; then
+            CONFIG_FILE="/boot/firmware/config.txt"
+        elif [ -f "/boot/config.txt" ]; then
+            CONFIG_FILE="/boot/config.txt"
+        fi
+        
+        if [ -n "$CONFIG_FILE" ]; then
+            # Raspberry Pi detected - offer to enable SPI
+            if ask_yes_no "SPI Not Enabled" "\nSPI interface is required but not detected (/dev/spidev* not found)!\n\nWould you like to enable it now?\n(This will require a reboot)"; then
+                echo "dtparam=spi=on" >> "$CONFIG_FILE"
+                show_info "SPI Enabled" "\nSPI has been enabled in $CONFIG_FILE\n\nSystem will reboot now. Please run this script again after reboot."
+                reboot
+            else
+                show_error "SPI is required for LoRa radio operation.\n\nPlease enable SPI manually and run this script again."
+                return
+            fi
         else
-            show_error "SPI is required for LoRa radio operation.\n\nPlease enable SPI manually and run this script again."
+            # Not a Raspberry Pi - provide generic instructions
+            show_error "SPI interface is required but not detected (/dev/spidev* not found).\n\nPlease enable SPI in your system's configuration and ensure the SPI kernel module is loaded.\n\nFor Raspberry Pi: sudo raspi-config -> Interfacing Options -> SPI -> Enable"
             return
         fi
-    elif [ -z "$CONFIG_FILE" ]; then
-        show_error "Could not find config.txt file.\n\nPlease enable SPI manually:\nsudo raspi-config -> Interfacing Options -> SPI -> Enable"
-        return
     fi
     
     # Get script directory for file copying during installation
@@ -328,7 +341,7 @@ EOF
     echo "Note: Using optimized binary wheels for faster installation"
     echo ""
     
-    if pip install --break-system-packages --force-reinstall --no-cache-dir .; then
+    if pip install --break-system-packages --no-cache-dir .; then
         echo ""
         echo "✓ Python package installation completed successfully!"
         
@@ -376,6 +389,74 @@ EOF
     fi
 }
 
+# Reset function
+reset_repeater() {
+    local config_file="$CONFIG_DIR/config.yaml"
+    local updated_example="$CONFIG_DIR/config.yaml.example"
+
+    if [ "$EUID" -ne 0 ]; then
+        show_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
+        return
+    fi
+    
+    local current_version=$(get_version)
+    
+    if ask_yes_no "Confirm Reset of pyMC Repeater restoring to default configuration.\n\nContinue?"; then
+        
+        # Show info that upgrade is starting
+        show_info "Reseting" "Starting reset process...\n\nProgress will be shown in the terminal."
+        
+        echo "=== Reset Progress ==="
+        echo "[1/4] Stopping service..."
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        
+        echo "[2/4] Backing up configuration..."
+        if [ -d "$CONFIG_DIR" ]; then
+            cp -r "$CONFIG_DIR" "$CONFIG_DIR.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            echo "    ✓ Configuration backed up"
+        fi
+	echo "3/4 Restore default config.yaml from config.yaml.example"
+	cp $updated_example $config_file
+	sleep 5
+        # Reload systemd and start the service
+	echo "4/4 Restart the service"
+        systemctl daemon-reload
+        systemctl start "$SERVICE_NAME"
+        # Show final results
+        sleep 2
+        local ip_address=$(hostname -I | awk '{print $1}')
+        if is_running; then
+            clear
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "        ✓ Reset Completed Successfully!"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "Service is running on:"
+            echo "  → http://$ip_address:8000"
+            echo ""
+            echo "═══════════════════════════════════════════════════════════════"
+            echo "        NEXT STEP: Complete Web Setup Wizard"
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            echo "Open the web dashboard in your browser to complete setup:"
+            echo ""
+            echo "  1. Navigate to: http://$ip_address:8000"
+            echo "  2. Complete the 5-step setup wizard:"
+            echo "     • Choose repeater name"
+            echo "     • Select hardware board"
+            echo "     • Configure radio settings"
+            echo "     • Set admin password"
+            echo "  3. Log in to your configured repeater"
+            echo ""
+            echo "═══════════════════════════════════════════════════════════════"
+            echo ""
+            read -p "Press Enter to return to main menu..." || true
+        else
+            show_error "Installation completed but service failed to start!\n\nCheck logs from the main menu for details."
+        fi
+    fi
+}
+        
 # Upgrade function
 upgrade_repeater() {
     if [ "$EUID" -ne 0 ]; then
@@ -521,7 +602,7 @@ EOF
             echo "⚠ Package update failed, but continuing..."
         fi
         
-        # Note: pymc_core is already reinstalled as part of the full --force-reinstall above
+
         echo ""
         echo "✓ All packages including pymc_core reinstalled successfully"
 

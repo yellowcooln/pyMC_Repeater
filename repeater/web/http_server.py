@@ -284,6 +284,8 @@ class HTTPStatsServer:
             config = {
                 "/": {
                     "tools.sessions.on": False,
+                    # "tools.gzip.on": True,
+                    # "tools.gzip.mime_types": ["application/json", "text/html", "text/plain"],
                     # Ensure proper content types for static files
                     "tools.staticfile.content_types": {
                         'js': 'application/javascript',
@@ -296,6 +298,12 @@ class HTTPStatsServer:
                 # Require authentication for all /api endpoints
                 "/api": {
                     "tools.require_auth.on": True,
+                },
+                # Enable gzip for bulk packet downloads
+                "/api/bulk_packets": {
+                    "tools.gzip.on": True,
+                    "tools.gzip.mime_types": ["application/json"],
+                    "tools.gzip.compress_level": 6,
                 },
                 # Public documentation endpoints (no auth required)
                 "/api/openapi": {
@@ -332,6 +340,7 @@ class HTTPStatsServer:
                         "tools.websocket.handler_cls": PacketWebSocket,
                         "tools.trailing_slash.on": False,
                         "tools.require_auth.on": False,
+                        "tools.gzip.on": False,  
                     }
                     logger.info("WebSocket endpoint configured at /ws/packets")
                 except Exception as e:
