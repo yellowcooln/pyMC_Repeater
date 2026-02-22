@@ -237,9 +237,9 @@ def get_radio_for_board(board_config: dict):
             set_spi_transport(ch341_spi)
 
         combined_config = {
-            "bus_id": spi_config["bus_id"],
-            "cs_id": spi_config["cs_id"],
-            "cs_pin": spi_config["cs_pin"],
+            "bus_id": _parse_int(spi_config["bus_id"]),
+            "cs_id": _parse_int(spi_config["cs_id"]),
+            "cs_pin": _parse_int(spi_config["cs_pin"]),
             "gpio_chip": spi_config.get("gpio_chip", 0),
             "use_gpiod_backend": spi_config.get("use_gpiod_backend", False),
             "reset_pin": _parse_int(spi_config["reset_pin"]),
