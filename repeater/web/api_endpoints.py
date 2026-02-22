@@ -262,7 +262,12 @@ class APIEndpoints:
             import json
 
             # Check config-based location first, then development location
-            config_dir = Path(self.config.get("storage_dir", "/var/lib/pymc_repeater"))
+            storage_dir_cfg = (
+                self.config.get("storage", {}).get("storage_dir")
+                or self.config.get("storage_dir")
+                or "/var/lib/pymc_repeater"
+            )
+            config_dir = Path(storage_dir_cfg)
             installed_path = config_dir / 'radio-settings.json'
             dev_path = os.path.join(os.path.dirname(__file__), '..', '..', 'radio-settings.json')
             
@@ -301,7 +306,12 @@ class APIEndpoints:
             import json
             
             # Check config-based location first, then development location
-            config_dir = Path(self.config.get("storage_dir", "/var/lib/pymc_repeater"))
+            storage_dir_cfg = (
+                self.config.get("storage", {}).get("storage_dir")
+                or self.config.get("storage_dir")
+                or "/var/lib/pymc_repeater"
+            )
+            config_dir = Path(storage_dir_cfg)
             installed_path = config_dir / 'radio-presets.json'
             dev_path = os.path.join(os.path.dirname(__file__), '..', '..', 'radio-presets.json')
             
@@ -353,7 +363,12 @@ class APIEndpoints:
             
             # Load hardware configuration - check installed path first, then dev path
             import json
-            config_dir = Path(self.config.get("storage_dir", "/var/lib/pymc_repeater"))
+            storage_dir_cfg = (
+                self.config.get("storage", {}).get("storage_dir")
+                or self.config.get("storage_dir")
+                or "/var/lib/pymc_repeater"
+            )
+            config_dir = Path(storage_dir_cfg)
             installed_path = config_dir / 'radio-settings.json'
             dev_path = os.path.join(os.path.dirname(__file__), '..', '..', 'radio-settings.json')
             
@@ -387,6 +402,22 @@ class APIEndpoints:
             if 'security' not in config_yaml['repeater']:
                 config_yaml['repeater']['security'] = {}
             config_yaml['repeater']['security']['admin_password'] = admin_password
+            
+            # Update radio backend selection (radio_type + optional CH341 USB adapter info)
+            if 'radio_type' in hw_config:
+                config_yaml['radio_type'] = hw_config.get('radio_type')
+            
+            # CH341 settings can be provided as top-level fields or nested object
+            ch341_cfg = hw_config.get('ch341') if isinstance(hw_config.get('ch341'), dict) else None
+            vid = (ch341_cfg or {}).get('vid', hw_config.get('vid'))
+            pid = (ch341_cfg or {}).get('pid', hw_config.get('pid'))
+            if vid is not None or pid is not None:
+                if 'ch341' not in config_yaml:
+                    config_yaml['ch341'] = {}
+                if vid is not None:
+                    config_yaml['ch341']['vid'] = vid
+                if pid is not None:
+                    config_yaml['ch341']['pid'] = pid
             
             # Update radio settings - convert MHz/kHz to Hz
             if 'radio' not in config_yaml:
@@ -439,6 +470,8 @@ class APIEndpoints:
             # Hardware flags
             if 'use_dio3_tcxo' in hw_config:
                 config_yaml['sx1262']['use_dio3_tcxo'] = hw_config.get('use_dio3_tcxo', False)
+            if 'dio3_tcxo_voltage' in hw_config:
+                config_yaml['sx1262']['dio3_tcxo_voltage'] = hw_config.get('dio3_tcxo_voltage', 1.8)
             if 'use_dio2_rf' in hw_config:
                 config_yaml['sx1262']['use_dio2_rf'] = hw_config.get('use_dio2_rf', False)
             if 'is_waveshare' in hw_config:
