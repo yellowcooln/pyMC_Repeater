@@ -194,6 +194,89 @@ The upgrade script will:
 - Restart the service automatically
 - Preserve your existing configuration
 
+---
+
+## Installing on Proxmox (LXC Container)
+
+pyMC Repeater can run inside a Proxmox LXC container using a **CH341 USB-to-SPI adapter** for radio communication. This is ideal for headless, always-on deployments without dedicating a full Raspberry Pi.
+
+### Requirements
+
+- **Proxmox VE 7.x or 8.x** host
+- **CH341 USB-to-SPI adapter** (VID `1a86`, PID `5512`) connected to the Proxmox host
+- **SX1262-based LoRa module** (e.g. Ebyte E22-900M30S) wired to the CH341 adapter
+- Internet connectivity for the container
+
+### One-Line Install
+
+Run this on the **Proxmox host** (not inside a container):
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/rightup/pyMC_Repeater/main/scripts/proxmox-install.sh)"
+```
+
+The installer will interactively prompt you for container settings (hostname, RAM, disk, bridge, etc.) and then:
+
+1. Download a Debian 12 LXC template
+2. Create a **privileged** container with USB passthrough
+3. Install a host-side udev rule for the CH341 device
+4. Clone the repository and pre-seed the config with CH341 GPIO pin mappings
+5. Run `manage.sh install` inside the container
+6. Display the dashboard URL when finished
+
+### Default Container Settings
+
+| Setting   | Default         |
+|-----------|-----------------|
+| Hostname  | `pymc-repeater` |
+| RAM       | 1024 MB         |
+| Disk      | 4 GB            |
+| CPU cores | 2               |
+| Bridge    | `vmbr0`         |
+| Storage   | `local-lvm`     |
+| Password  | `pymc`          |
+
+### After Installation
+
+```bash
+# Enter the container
+pct enter <CTID>
+
+# View service logs
+journalctl -u pymc-repeater -f
+
+# Access web dashboard
+http://<container-ip>:8000
+
+# Manage the repeater
+cd /opt/pymc_repeater && bash manage.sh
+```
+
+### CH341 GPIO Pin Mapping
+
+The installer pre-configures the CH341 GPIO pins for an E22 module. These differ from the Raspberry Pi BCM pin numbers:
+
+| Function | CH341 GPIO | Pi BCM (default) |
+|----------|-----------|-------------------|
+| CS       | 0         | 21                |
+| RXEN     | 1         | -1                |
+| Reset    | 2         | 18                |
+| Busy     | 4         | 20                |
+| IRQ      | 6         | 16                |
+
+The installer also enables `use_dio3_tcxo` and `use_dio2_rf` for E22 modules.
+
+### Troubleshooting (Proxmox)
+
+- **USB device not found**: Make sure the CH341 is plugged into the Proxmox host and shows up with `lsusb -d 1a86:5512`
+- **Permission denied on USB**: The installer creates a host udev rule (`/etc/udev/rules.d/99-ch341.rules`). Run `udevadm trigger` on the host if needed
+- **Container can't see USB**: Verify USB passthrough lines exist in `/etc/pve/lxc/<CTID>.conf`:
+  ```
+  lxc.cgroup2.devices.allow: c 189:* rwm
+  lxc.mount.entry: /dev/bus/usb dev/bus/usb none bind,optional,create=dir 0 0
+  ```
+- **NoBackendError (libusb)**: The installer installs `libusb-1.0-0` automatically. If you see this error, run `apt-get install libusb-1.0-0` inside the container
+
 
 
 
