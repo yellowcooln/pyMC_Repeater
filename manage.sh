@@ -254,7 +254,7 @@ install_repeater() {
     
     echo ">>> Installing system dependencies..."
     apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y libffi-dev libusb-1.0-0 policykit-1 jq pip python3-rrdtool wget swig build-essential python3-dev
+    DEBIAN_FRONTEND=noninteractive apt-get install -y libffi-dev libusb-1.0-0 sudo policykit-1 jq pip python3-rrdtool wget swig build-essential python3-dev
     pip install --break-system-packages setuptools_scm 2>&1 || true
     
     # Install mikefarah yq v4 if not already installed
@@ -342,6 +342,7 @@ EOF
     
     # Also configure sudoers as fallback for service restart
     echo ">>> Configuring sudoers for service management..."
+    mkdir -p /etc/sudoers.d
     cat > /etc/sudoers.d/pymc-repeater <<'EOF'
 # Allow repeater user to manage the pymc-repeater service without password
 repeater ALL=(root) NOPASSWD: /usr/bin/systemctl restart pymc-repeater, /usr/bin/systemctl stop pymc-repeater, /usr/bin/systemctl start pymc-repeater, /usr/bin/systemctl status pymc-repeater
@@ -542,7 +543,7 @@ upgrade_repeater() {
         echo "[3/9] Updating system dependencies..."
         apt-get update -qq
 
-        apt-get install -y libffi-dev libusb-1.0-0 policykit-1 jq pip python3-rrdtool wget swig build-essential python3-dev
+        apt-get install -y libffi-dev libusb-1.0-0 sudo policykit-1 jq pip python3-rrdtool wget swig build-essential python3-dev
         pip install --break-system-packages setuptools_scm >/dev/null 2>&1 || true
         
         # Install mikefarah yq v4 if not already installed
@@ -634,6 +635,7 @@ polkit.addRule(function(action, subject) {
 EOF
         chmod 0644 /etc/polkit-1/rules.d/10-pymc-repeater.rules
         # Also configure sudoers as fallback for service restart
+        mkdir -p /etc/sudoers.d
         cat > /etc/sudoers.d/pymc-repeater <<'EOF'
 # Allow repeater user to manage the pymc-repeater service without password
 repeater ALL=(root) NOPASSWD: /usr/bin/systemctl restart pymc-repeater, /usr/bin/systemctl stop pymc-repeater, /usr/bin/systemctl start pymc-repeater, /usr/bin/systemctl status pymc-repeater
