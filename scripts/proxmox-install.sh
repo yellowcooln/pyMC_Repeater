@@ -169,7 +169,15 @@ msg_ok "Container running with network"
 msg_info "Installing git inside container..."
 pct exec "$CTID" -- bash -c "
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get install -y git whiptail >/dev/null 2>&1
+
+    # Fix locale warnings
+    apt-get update -qq
+    apt-get install -y locales >/dev/null 2>&1
+    sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
+    locale-gen >/dev/null 2>&1
+    echo 'LANG=en_US.UTF-8' > /etc/default/locale
+
+    apt-get install -y git whiptail >/dev/null 2>&1
 
     # Enable auto-login on console (no password prompt in Proxmox web console)
     mkdir -p /etc/systemd/system/container-getty@1.service.d
@@ -180,11 +188,20 @@ ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud tty%I 115200,3840
 AUTOLOGIN
     systemctl daemon-reload
 "
-msg_ok "Git installed, console auto-login enabled"
+msg_ok "Git installed, locale fixed, console auto-login enabled"
 
 msg_info "Cloning pyMC_Repeater (branch: ${BRANCH})..."
 pct exec "$CTID" -- bash -c "git clone --branch ${BRANCH} ${REPO} /root/pyMC_Repeater"
 msg_ok "Repository cloned"
+
+# Pre-seed config with CH341 radio type so manage.sh skips the SPI check
+pct exec "$CTID" -- bash -c "
+    mkdir -p /etc/pymc_repeater
+    if [ -f /root/pyMC_Repeater/config.yaml.example ]; then
+        cp /root/pyMC_Repeater/config.yaml.example /etc/pymc_repeater/config.yaml
+        sed -i 's/^radio_type:.*/radio_type: sx1262_ch341/' /etc/pymc_repeater/config.yaml
+    fi
+"
 
 # ── Run manage.sh install ─────────────────────────────────────────────────
 msg_info "Running manage.sh install (this will take several minutes)..."
