@@ -68,7 +68,7 @@
       "name": "PiMesh-1W (V2)",
       "bus_id": 0,
       "cs_id": 0,
-      "cs_pin": 8,
+      "cs_pin": -1,
       "reset_pin": 18,
       "busy_pin": 5,
       "irq_pin": 6,
