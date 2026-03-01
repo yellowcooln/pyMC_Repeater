@@ -8,12 +8,31 @@ CONFIG_DIR="/etc/pymc_repeater"
 LOG_DIR="/var/log/pymc_repeater"
 SERVICE_USER="repeater"
 SERVICE_NAME="pymc-repeater"
+SILENT_MODE="${PYMC_SILENT:-${SILENT:-}}"
+
+is_silent_flag() {
+    case "${1:-}" in
+        --silent|-y|silent) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_interactive_flag() {
+    case "${1:-}" in
+        --interactive|-i|interactive) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # Check if we're running in an interactive terminal
 if [ ! -t 0 ] || [ -z "$TERM" ]; then
-    echo "Error: This script requires an interactive terminal."
-    echo "Please run from SSH or a local terminal, not via file manager."
-    exit 1
+    if [[ "$1" =~ ^(upgrade|start|stop|restart)$ ]] && ! is_interactive_flag "$2"; then
+        :
+    else
+        echo "Error: This script requires an interactive terminal."
+        echo "Please run from SSH or a local terminal, not via file manager."
+        exit 1
+    fi
 fi
 
 # Check if whiptail is available, fallback to dialog
@@ -125,7 +144,7 @@ show_main_menu() {
             ;;
         "upgrade")
             if is_installed; then
-                upgrade_repeater
+                upgrade_repeater "false"
             else
                 show_error "pyMC Repeater is not installed!\n\nUse 'install' first."
             fi
@@ -148,13 +167,13 @@ show_main_menu() {
             configure_radio
             ;;
         "start")
-            manage_service "start"
+            manage_service "start" "false"
             ;;
         "stop")
-            manage_service "stop"
+            manage_service "stop" "false"
             ;;
         "restart")
-            manage_service "restart"
+            manage_service "restart" "false"
             ;;
         "logs")
             clear
@@ -522,17 +541,29 @@ reset_repeater() {
         
 # Upgrade function
 upgrade_repeater() {
+    local silent="${1:-false}"
     if [ "$EUID" -ne 0 ]; then
-        show_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
-        return
+        if [[ "$silent" == "true" ]]; then
+            echo "Upgrade requires root privileges. Please run: sudo $0 upgrade"
+        else
+            show_error "Upgrade requires root privileges.\n\nPlease run: sudo $0"
+        fi
+        return 1
     fi
     
     local current_version=$(get_version)
     
-    if ask_yes_no "Confirm Upgrade" "Current version: $current_version\n\nThis will upgrade pyMC Repeater while preserving your configuration.\n\nContinue?"; then
+    if [[ "$silent" != "true" ]]; then
+        if ! ask_yes_no "Confirm Upgrade" "Current version: $current_version\n\nThis will upgrade pyMC Repeater while preserving your configuration.\n\nContinue?"; then
+            return 0
+        fi
         
         # Show info that upgrade is starting
         show_info "Upgrading" "Starting upgrade process...\n\nThis may take a few minutes.\nProgress will be shown in the terminal."
+    else
+        echo "Starting upgrade process..."
+        echo "Current version: $current_version"
+    fi
         
         echo "=== Upgrade Progress ==="
         echo "[1/9] Stopping service..."
@@ -714,13 +745,28 @@ EOF
             if [ -f /run/host/container-manager ] || [ -n "${container:-}" ] || grep -qsai 'container=' /proc/1/environ 2>/dev/null || [ -f /.dockerenv ]; then
                 container_note="\n\n⚠ CONTAINER DETECTED:\nUSB udev rules must be set on the HOST, not here.\nSee documentation for CH341 host-side setup."
             fi
-            show_info "Upgrade Complete" "Upgrade completed successfully!\n\nVersion: $current_version → $new_version\n\n✓ Service is running\n✓ Configuration preserved${container_note}"
+            if [[ "$silent" == "true" ]]; then
+                echo "Upgrade completed successfully!"
+                echo "Version: $current_version -> $new_version"
+                echo "✓ Service is running"
+                echo "✓ Configuration preserved"
+                if [[ -n "$container_note" ]]; then
+                    echo "$container_note"
+                fi
+            else
+                show_info "Upgrade Complete" "Upgrade completed successfully!\n\nVersion: $current_version → $new_version\n\n✓ Service is running\n✓ Configuration preserved${container_note}"
+            fi
         else
             echo "    ✗ Service failed to start"
-            show_error "Upgrade completed but service failed to start!\n\nVersion updated: $current_version → $new_version\n\nCheck logs from the main menu for details."
+            if [[ "$silent" == "true" ]]; then
+                echo "Upgrade completed but service failed to start!"
+                echo "Version updated: $current_version -> $new_version"
+                echo "Check logs from the main menu for details."
+            else
+                show_error "Upgrade completed but service failed to start!\n\nVersion updated: $current_version → $new_version\n\nCheck logs from the main menu for details."
+            fi
         fi
         echo "=== Upgrade Complete ==="
-    fi
 }
 
 # Radio Configuration function
@@ -814,15 +860,24 @@ uninstall_repeater() {
 # Service management
 manage_service() {
     local action=$1
+    local silent="${2:-false}"
     
     if [ "$EUID" -ne 0 ]; then
-        show_error "Service management requires root privileges.\n\nPlease run: sudo $0"
-        return
+        if [[ "$silent" == "true" ]]; then
+            echo "Service management requires root privileges. Please run: sudo $0 $action"
+        else
+            show_error "Service management requires root privileges.\n\nPlease run: sudo $0"
+        fi
+        return 1
     fi
     
     if ! service_exists; then
-        show_error "Service is not installed."
-        return
+        if [[ "$silent" == "true" ]]; then
+            echo "Service is not installed."
+        else
+            show_error "Service is not installed."
+        fi
+        return 1
     fi
     
     case $action in
@@ -832,21 +887,43 @@ manage_service() {
             fi
             systemctl start "$SERVICE_NAME"
             if is_running; then
-                show_info "Service Started" "\n✓ pyMC Repeater service has been started successfully."
+                if [[ "$silent" == "true" ]]; then
+                    echo "✓ pyMC Repeater service has been started successfully."
+                else
+                    show_info "Service Started" "\n✓ pyMC Repeater service has been started successfully."
+                fi
             else
-                show_error "Failed to start service!\n\nCheck logs for details."
+                if [[ "$silent" == "true" ]]; then
+                    echo "Failed to start service!"
+                    echo "Check logs for details."
+                else
+                    show_error "Failed to start service!\n\nCheck logs for details."
+                fi
             fi
             ;;
         "stop")
             systemctl stop "$SERVICE_NAME"
-            show_info "Service Stopped" "\n✓ pyMC Repeater service has been stopped."
+            if [[ "$silent" == "true" ]]; then
+                echo "✓ pyMC Repeater service has been stopped."
+            else
+                show_info "Service Stopped" "\n✓ pyMC Repeater service has been stopped."
+            fi
             ;;
         "restart")
             systemctl restart "$SERVICE_NAME"
             if is_running; then
-                show_info "Service Restarted" "\n✓ pyMC Repeater service has been restarted successfully."
+                if [[ "$silent" == "true" ]]; then
+                    echo "✓ pyMC Repeater service has been restarted successfully."
+                else
+                    show_info "Service Restarted" "\n✓ pyMC Repeater service has been restarted successfully."
+                fi
             else
-                show_error "Failed to restart service!\n\nCheck logs for details."
+                if [[ "$silent" == "true" ]]; then
+                    echo "Failed to restart service!"
+                    echo "Check logs for details."
+                else
+                    show_error "Failed to restart service!\n\nCheck logs for details."
+                fi
             fi
             ;;
     esac
@@ -974,12 +1051,12 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo ""
     echo "Actions:"
     echo "  install   - Install pyMC Repeater"
-    echo "  upgrade   - Upgrade existing installation"
+    echo "  upgrade   - Upgrade existing installation (CLI is silent by default; use --interactive to show dialogs)"
     echo "  uninstall - Remove pyMC Repeater"
     echo "  config    - Configure radio settings"
-    echo "  start     - Start the service"
-    echo "  stop      - Stop the service"
-    echo "  restart   - Restart the service"
+    echo "  start     - Start the service (CLI is silent by default; use --interactive to show dialogs)"
+    echo "  stop      - Stop the service (CLI is silent by default; use --interactive to show dialogs)"
+    echo "  restart   - Restart the service (CLI is silent by default; use --interactive to show dialogs)"
     echo "  logs      - View live logs"
     echo "  status    - Show status"
     echo "  debug     - Show debug information"
@@ -1011,7 +1088,11 @@ case "$1" in
         exit 0
         ;;
     "upgrade")
-        upgrade_repeater
+        silent_mode="true"
+        if is_interactive_flag "${2:-}" || [[ "$SILENT_MODE" == "0" || "$SILENT_MODE" == "false" ]]; then
+            silent_mode="false"
+        fi
+        upgrade_repeater "$silent_mode"
         exit 0
         ;;
     "uninstall")
@@ -1023,7 +1104,11 @@ case "$1" in
         exit 0
         ;;
     "start"|"stop"|"restart")
-        manage_service "$1"
+        silent_mode="true"
+        if is_interactive_flag "${2:-}" || [[ "$SILENT_MODE" == "0" || "$SILENT_MODE" == "false" ]]; then
+            silent_mode="false"
+        fi
+        manage_service "$1" "$silent_mode"
         exit 0
         ;;
     "logs")
